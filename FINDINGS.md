@@ -69,3 +69,23 @@ the skill's version check:
 mxbuild 11.13.0: 200
 mendix  11.13.0: 200
 ```
+
+### Boot verified, and `--hub` preview works from this environment
+
+`./mxcli run --local -p RRNetBanking.mpr` booted cold in ~10s (web client
+bundled in 9.3s) and `http://localhost:8080/` answered **HTTP 200**.
+
+`MXCLI_HUB_KEY` is set on this environment, so the optional step 8 preview
+works: `./mxcli run --hub https://hub.mxcli.org -p RRNetBanking.mpr` exposed the
+app at
+
+```
+https://rrnetbanking-claude-mendix-app-setup-requirements-2map3k.mxcli.org
+```
+
+The hostname is derived from the app name plus the current git branch, so it
+changes when the branch changes — don't treat a preview URL as stable across
+branches.
+
+Note that `--hub` and `--local` both bind 8080; the local run has to be stopped
+before starting a hub run, or the second one collides.
