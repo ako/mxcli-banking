@@ -69,11 +69,19 @@ browser, not at a layer.
 | 4 | Transfers — atomic, server-side limit and balance checks | **Done** |
 | 5 | Bill payments — Biller reference data | **Done** |
 | 6 | Profile and credentials, plus the dashboard summary | **Done** |
-| 7 | Open an additional account | Next |
-| 8 | Public content, loans brochure, admin back-office | |
+| 7 | Open an additional account | **Done** |
+| 8 | Public content, loans brochure, admin back-office | Next |
 
 Parked by decision, present in the source document but never implemented in it:
 investments, downloadable forms, loan applications, forgot-password.
+
+**One deliberate departure, in Slice 7.** The legacy "open a new account" page
+created a whole new *login* and copied the customer's name, address and mobile
+onto it, because its schema tied one login to one account. Slice 1 replaced that
+with Customer 1..* Account, so opening an account here adds one under the
+existing login. Reproducing the original would duplicate personal details once
+per account. The entry point, the branch choice and the zero opening balance are
+kept; the second set of credentials is not.
 
 ### Needs Studio Pro
 
@@ -123,6 +131,7 @@ node tests/verify-s3-beneficiaries.mjs
 node tests/verify-s4-transfers.mjs
 node tests/verify-s5-billpayments.mjs
 node tests/verify-s6-profile.mjs
+node tests/verify-s7-openaccount.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.

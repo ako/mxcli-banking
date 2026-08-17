@@ -1,0 +1,49 @@
+-- =====================================================================
+-- RRNetBanking — Slice 7 (Open an additional account)
+--
+-- Legacy: newregistration.jsp + PDAO.reg().
+--
+-- A DELIBERATE DEPARTURE, stated here because it is the largest one in
+-- the project.
+--
+-- The legacy page collected a NEW LOGIN ID and password, and reg()
+-- inserted a whole new customer identity — custp (login), cust (account
+-- to login), custd (name, address, mobile copied from the session's
+-- customer) and accd (the account). So "open a second account" actually
+-- meant "create a second customer who happens to have your details",
+-- because the legacy schema tied one login to one account through
+-- cust(cac, cid).
+--
+-- Slice 1 replaced that with Customer 1..* Account. Reproducing the
+-- legacy behaviour on top of it would duplicate every customer's personal
+-- details once per account — the same data smeared across rows that KYC
+-- rules exist to prevent, and a second set of credentials for the
+-- customer to manage. So this opens an account UNDER THE EXISTING LOGIN.
+--
+-- What is kept: the entry point ("through his previous account"), the
+-- branch, and the zero opening balance. What is dropped: the new login.
+--
+-- The legacy number-allocation defect goes with it. newregistration.jsp
+-- read the next number with `select * from acc`, showed it in a disabled
+-- input AND a hidden field named `acn`, and reg() trusted that hidden
+-- field before running `update acc set cac=cac+1`. Two customers opening
+-- an account at the same time got the same number, and anyone could edit
+-- the hidden field. AutoNumber assigns the number at commit; the form
+-- below has no account-number field at all.
+-- =====================================================================
+
+/**
+ * Form state for opening an account. The only choice the customer makes
+ * is the branch — the number is the bank's to assign.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.OpenAccountForm (
+  Acknowledged: Boolean
+)
+COMMENT 'Form state for opening an additional account. Not stored.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.OpenAccountForm_Branch
+  FROM Banking.OpenAccountForm TO Banking.Branch
+  TYPE Reference
+  COMMENT 'Branch the new account will be held at.';
+/

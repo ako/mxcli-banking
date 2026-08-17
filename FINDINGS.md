@@ -793,6 +793,35 @@ have no regex function, and doing it properly means a Regular Expression
 document plus an entity validation rule, which lint CONV015 steers away from.
 Length and prefix are enforced; full format validation is a hardening item.
 
+---
+
+## 2026-08-17 — Slice 7 (open an additional account)
+
+### `page.click()` on a Mendix checkbox is not reliable; `check()` is
+
+The whole slice failed its first run because the acknowledgement checkbox never
+got ticked — seven cascading failures from one un-landed click. `click` on
+`.mx-name-chk… input, .mx-name-chk…` can hit the label or the wrapper,
+especially once a validation message is attached to the widget.
+
+`page.check(selector)` asserts the resulting state rather than assuming the
+click landed, and the test now also asserts `isChecked()` before submitting, so
+a future failure points at the checkbox rather than at the seven things
+downstream of it.
+
+Same family as the Slice 6 blur race: the browser did something, just not the
+thing the test assumed.
+
+### Reusing a seeding microflow as production code
+
+`SUB_OpenAccount` calls `SUB_BackfillAccountLabels`, written in Slice 2 to fill
+`AccountLabel` for demo accounts. It fills the label for any account missing
+one, which is exactly what a newly committed account needs — the label is built
+from the AutoNumber, which does not exist until commit.
+
+Worth noting because the instinct is to write a second, near-identical
+microflow. The seeding flow was already idempotent and already correct.
+
 ### Open security items, deliberately deferred
 
 Two lint warnings are accepted for now and must be closed before any real
