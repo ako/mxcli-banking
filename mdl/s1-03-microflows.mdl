@@ -1,0 +1,47 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: microflows
+--
+-- DS_ = datasource microflow, SUB_ = reusable sub-microflow (lint
+-- CUSTOM002 naming convention).
+--
+-- The legacy system put its data access in JSP scriptlets, so every page
+-- opened its own JDBC connection and built SQL from request parameters.
+-- Retrieval lives in microflows here, and entity access rules apply to
+-- every retrieve automatically.
+-- =====================================================================
+
+/**
+ * The Customer record of whoever is logged in.
+ *
+ * Datasource for the home dashboard. Returns nothing for a user who is
+ * not a Customer (an Administrator, say), so the dashboard simply shows
+ * no data rather than erroring.
+ */
+CREATE MICROFLOW Banking.DS_CurrentCustomer ()
+RETURNS Banking.Customer AS $Customer
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Customer FROM Banking.Customer
+    WHERE '[id = ''[%CurrentUser%]'']'
+    LIMIT 1;
+  RETURN $Customer;
+END;
+/
+
+/**
+ * Accounts held by the logged-in customer, newest first.
+ *
+ * Even though this retrieves without an explicit owner filter, the
+ * AccountHolder entity access rule constrains it to the current user's
+ * accounts. That is the point of doing row-level security in the model
+ * rather than in each query, which is where the legacy system failed.
+ */
+CREATE MICROFLOW Banking.DS_MyAccounts ()
+RETURNS LIST OF Banking.Account AS $Accounts
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    SORT BY AccountNumber ASC;
+  RETURN $Accounts;
+END;
+/

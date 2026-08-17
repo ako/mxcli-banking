@@ -1,0 +1,19 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: navigation
+--
+-- Replaces the blank app's MyFirstModule.Home_Web home page. Customers
+-- land on the banking dashboard; administrators land on the stock
+-- Administration user overview, which is all the back office needs until
+-- Slice 8 builds real admin pages.
+--
+-- The menu grows one entry per slice: statements in S2, beneficiaries and
+-- transfers in S3/S4, and so on.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Administration.Account_Overview FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+  );
+/

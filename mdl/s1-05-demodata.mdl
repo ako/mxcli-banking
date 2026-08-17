@@ -1,0 +1,125 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: demo users and seed data
+--
+-- Demo users give us a Banking.Customer object per login without
+-- hand-rolling user creation and role assignment. The after-startup
+-- microflow then fills in the customer detail and opens an account for
+-- any customer that has none, so a fresh database is demoable
+-- immediately.
+--
+-- Seeding is idempotent: it keys off "does this customer already have an
+-- account", so restarting the app does not pile up duplicates.
+--
+-- Two MDL constraints shape the style below:
+--   * HEAD() is a list activity, not a Mendix expression function, so it
+--     cannot appear in an IF condition (MDL044). Count into a variable
+--     and test that instead.
+--   * Objects are collected and committed after the loop rather than
+--     inside it, to avoid the N+1 commit pattern (lint CONV011).
+-- =====================================================================
+
+ALTER PROJECT SECURITY DEMO USERS ON;
+/
+
+-- The project password policy requires at least 12 characters, so these
+-- are longer than the usual demo passwords.
+CREATE DEMO USER 'rahul' PASSWORD 'RRCustomer2026!' ENTITY Banking.Customer (Customer);
+/
+CREATE DEMO USER 'priya' PASSWORD 'RRCustomer2026!' ENTITY Banking.Customer (Customer);
+/
+CREATE DEMO USER 'admin' PASSWORD 'RRAdmin2026!!' (Administrator);
+/
+
+/**
+ * Create the two branches of Bank of RR if they are not there yet, and
+ * return the main branch.
+ *
+ * Legacy accd.bcode was a bare integer referencing nothing; RR001 is the
+ * code the seed data uses for it.
+ */
+CREATE MICROFLOW Banking.SUB_SeedBranches ()
+RETURNS Banking.Branch AS $MainBranch
+FOLDER 'Demo data'
+BEGIN
+  RETRIEVE $MainMatches FROM Banking.Branch
+    WHERE '[Code = ''RR001'']';
+  $MainCount = COUNT($MainMatches);
+
+  IF $MainCount = 0 THEN
+    $NewMain = CREATE Banking.Branch (
+      Code = 'RR001',
+      BranchName = 'RR Main Branch',
+      City = 'Mumbai'
+    ) COMMIT;
+  END IF;
+
+  RETRIEVE $SecondMatches FROM Banking.Branch
+    WHERE '[Code = ''RR002'']';
+  $SecondCount = COUNT($SecondMatches);
+
+  IF $SecondCount = 0 THEN
+    $NewSecond = CREATE Banking.Branch (
+      Code = 'RR002',
+      BranchName = 'RR City Branch',
+      City = 'Pune'
+    ) COMMIT;
+  END IF;
+
+  -- Re-read so the return value is set whichever branch of the IF ran.
+  RETRIEVE $FinalMatches FROM Banking.Branch
+    WHERE '[Code = ''RR001'']';
+  $MainBranch = HEAD($FinalMatches);
+
+  RETURN $MainBranch;
+END;
+/
+
+/**
+ * After-startup seeding.
+ *
+ * Runs in the system context, so entity access rules do not apply — which
+ * is why it can see every customer rather than only the current user's.
+ */
+CREATE MICROFLOW Banking.SCH_AfterStartup ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  $MainBranch = CALL MICROFLOW Banking.SUB_SeedBranches();
+
+  RETRIEVE $Customers FROM Banking.Customer;
+
+  $CustomersToCommit = CREATE LIST OF Banking.Customer;
+  $AccountsToCommit = CREATE LIST OF Banking.Account;
+
+  LOOP $Customer IN $Customers BEGIN
+    RETRIEVE $ExistingAccounts FROM $Customer/Banking.Account_Customer;
+    $AccountCount = COUNT($ExistingAccounts);
+
+    IF $AccountCount = 0 THEN
+      CHANGE $Customer (
+        FullName = 'Demo Customer ' + $Customer/Name,
+        Address = '12 MG Road, Mumbai',
+        MobileNumber = '9566137117'
+      );
+      ADD $Customer TO $CustomersToCommit;
+
+      $Account = CREATE Banking.Account (
+        Balance = 25000,
+        Status = Banking.ENUM_AccountStatus.Active,
+        OpenedOn = [%CurrentDateTime%],
+        Banking.Account_Customer = $Customer,
+        Banking.Account_Branch = $MainBranch
+      );
+      ADD $Account TO $AccountsToCommit;
+    END IF;
+  END LOOP;
+
+  COMMIT $CustomersToCommit;
+  COMMIT $AccountsToCommit;
+
+  RETURN true;
+END;
+/
+
+ALTER SETTINGS MODEL AfterStartupMicroflow = 'Banking.SCH_AfterStartup';
+/

@@ -1,0 +1,95 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1 (Foundation, identity, home): domain model
+--
+-- Replaces the legacy tables custp/custd (credentials + customer detail),
+-- cust + accd (account, balance, branch) from the JSP system. The legacy
+-- 'acc' counter table has no equivalent: AutoNumber removes the
+-- read-modify-write race that let two concurrent registrations claim the
+-- same account number.
+-- =====================================================================
+
+/**
+ * Lifecycle state of a bank account. The legacy schema had no status column
+ * at all, so a closed account was indistinguishable from an open one.
+ */
+CREATE OR MODIFY ENUMERATION Banking.ENUM_AccountStatus (
+  Active 'Active',
+  Blocked 'Blocked',
+  Closed 'Closed'
+);
+/
+
+/**
+ * A branch of Bank of RR. Legacy: the bare integer accd.bcode, which
+ * referenced nothing and could not be resolved to a name.
+ */
+CREATE PERSISTENT ENTITY Banking.Branch (
+  Code: String(10) NOT NULL UNIQUE ERROR 'A branch with this code already exists.',
+  BranchName: String(100) NOT NULL,
+  City: String(100)
+)
+COMMENT 'A branch of Bank of RR. Reference data, maintained by Administrators.';
+/
+
+/**
+ * An internet banking customer. Extends Administration.Account so that the
+ * username, password hashing and the platform change-password flow are
+ * handled by Mendix.
+ *
+ * This is what removes three legacy defects at once: credentials are no
+ * longer stored in plaintext (custp.pass), authentication is no longer a
+ * string-concatenated SQL query open to injection, and login no longer
+ * depends on the customer having at least one transaction row.
+ */
+-- FullName is NOT declared here: Administration.Account already provides
+-- FullName and Email, and redeclaring it is CE0069 "Duplicate member name".
+-- Address and MobileNumber (legacy custd.cadd / custd.cmobile) are ours.
+--
+-- Nothing here may be NOT NULL or UNIQUE either: this entity backs demo
+-- users, and CE7247 forbids required/unique validation rules on a user
+-- entity or its generalizations. Requiredness is enforced in the
+-- registration microflow instead (Slice 7).
+CREATE PERSISTENT ENTITY Banking.Customer EXTENDS Administration.Account (
+  Address: String(200),
+  MobileNumber: String(15)
+)
+COMMENT 'Internet banking customer. Login and password are inherited from Administration.Account.';
+/
+
+/**
+ * A bank account. Legacy: accd(cac, bal, bcode) plus the acc counter table.
+ *
+ * AccountNumber is an AutoNumber rather than a hand-incremented counter,
+ * and Balance is only ever changed by microflows — never by an entity
+ * access rule — so no page can write it directly.
+ */
+CREATE PERSISTENT ENTITY Banking.Account (
+  AccountNumber: AutoNumber DEFAULT 100000001,
+  Balance: Decimal NOT NULL,
+  Status: Enumeration(Banking.ENUM_AccountStatus),
+  OpenedOn: DateTime
+)
+INDEX (AccountNumber)
+COMMENT 'A bank account held by a Customer at a Branch. Balance is microflow-controlled.';
+/
+
+/**
+ * Each account belongs to exactly one customer; a customer may hold several
+ * (the legacy "open a new account through your previous account" feature).
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Account_Customer
+  FROM Banking.Account TO Banking.Customer
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Owner of the account. A customer with accounts cannot be deleted.';
+/
+
+/**
+ * The branch that holds the account. Legacy: accd.bcode.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Account_Branch
+  FROM Banking.Account TO Banking.Branch
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Branch holding the account. A branch with accounts cannot be deleted.';
+/

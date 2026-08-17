@@ -1,0 +1,86 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: security
+--
+-- The legacy system had no server-side authorization whatsoever: any
+-- logged-in user could reach any account by tampering with a request
+-- parameter, because every JSP built its SQL from request values and
+-- checked nothing. Row-level XPath constraints below make that class of
+-- attack structurally impossible rather than something to remember.
+--
+-- Security level is PRODUCTION, not PROTOTYPE, deliberately: prototype
+-- security enforces page and user-role access but NOT entity access
+-- rules, so the constraints below would be inert.
+--
+-- No rule grants CREATE or DELETE (lint CONV006). Accounts and customers
+-- are created by microflows, so there is one auditable path in.
+-- =====================================================================
+
+ALTER PROJECT SECURITY LEVEL PRODUCTION;
+/
+
+/**
+ * A customer using the internet banking portal. Sees only their own data.
+ */
+CREATE OR MODIFY MODULE ROLE Banking.AccountHolder
+  DESCRIPTION 'Internet banking customer. Sees and acts on their own accounts only.';
+/
+
+/**
+ * Back-office administrator: maintains reference data and supports
+ * customers. The JSP original had no administrator at all.
+ */
+CREATE OR MODIFY MODULE ROLE Banking.Administrator
+  DESCRIPTION 'Back-office staff. Maintains branches and supports customers.';
+/
+
+-- Each module role maps to exactly one user role (lint CONV008).
+--
+-- 'Customer' is ours, so it is created. 'Administrator' already ships with
+-- the blank app (alongside 'User'), so it is altered rather than created —
+-- CREATE USER ROLE fails with "user role already exists" on the stock roles.
+CREATE USER ROLE Customer (Banking.AccountHolder);
+/
+ALTER USER ROLE Administrator ADD MODULE ROLES (Banking.Administrator);
+/
+
+-- ---------------------------------------------------------------------
+-- Branch: reference data. Readable by everyone who logs in, writable
+-- only by administrators.
+-- ---------------------------------------------------------------------
+GRANT Banking.AccountHolder ON Banking.Branch (READ *);
+/
+GRANT Banking.Administrator ON Banking.Branch (READ *, WRITE *);
+/
+
+-- ---------------------------------------------------------------------
+-- Customer: a customer may read and maintain only their own record.
+-- The constraint compares object identity against the current user,
+-- which works because Customer extends Administration.Account extends
+-- System.User.
+--
+-- Password and Name are platform members of the user entity; Mendix
+-- manages them and mxcli leaves them out of the rule automatically.
+-- ---------------------------------------------------------------------
+GRANT Banking.AccountHolder ON Banking.Customer (READ *)
+  WHERE '[id = ''[%CurrentUser%]'']';
+/
+GRANT Banking.Administrator ON Banking.Customer (READ *, WRITE *);
+/
+
+-- ---------------------------------------------------------------------
+-- Account: the important one. A customer sees an account only when it
+-- is associated to them.
+--
+-- Balance is deliberately absent from every WRITE rule: it is changed by
+-- transfer and bill-payment microflows only. In the legacy system the
+-- balance was updated straight from a request parameter with no check,
+-- which is defect 3 and 4 of the analysis.
+-- ---------------------------------------------------------------------
+GRANT Banking.AccountHolder ON Banking.Account (READ *)
+  WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']';
+/
+-- "Status" is quoted: Status is a reserved word in MDL, though it parses
+-- unquoted inside CREATE ENTITY.
+GRANT Banking.Administrator ON Banking.Account (READ *, WRITE ("Status"))
+  WHERE '[Status != ''Closed'']';
+/
