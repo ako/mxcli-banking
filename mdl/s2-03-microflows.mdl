@@ -123,14 +123,30 @@ END;
  *
  * The CHANGE is a no-op assignment; REFRESH is the whole point of it.
  */
+CREATE OR REPLACE MICROFLOW Banking.SUB_TouchStatementFilter (
+  $Filter: Banking.StatementFilter
+)
+RETURNS Boolean AS $Touched
+FOLDER 'Actions'
+BEGIN
+  CHANGE $Filter (ToDate = $Filter/ToDate) REFRESH;
+  RETURN true;
+END;
+/
+
+/**
+ * Button target for "Show statement". Thin by design — the object change
+ * that does the actual refreshing lives in SUB_TouchStatementFilter
+ * (lint CONV010).
+ */
 CREATE OR REPLACE MICROFLOW Banking.ACT_RefreshStatement (
   $Filter: Banking.StatementFilter
 )
 RETURNS Boolean AS $Refreshed
 FOLDER 'Actions'
 BEGIN
-  CHANGE $Filter (ToDate = $Filter/ToDate) REFRESH;
-  RETURN true;
+  $Touched = CALL MICROFLOW Banking.SUB_TouchStatementFilter (Filter = $Filter);
+  RETURN $Touched;
 END;
 /
 

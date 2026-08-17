@@ -18,8 +18,24 @@ DESCRIPTION = "ACT_ microflows should only contain UI actions and sub-microflow 
 CATEGORY = "architecture"
 SEVERITY = "warning"
 
-# Allowed action types in ACT_ microflows
+# Allowed action types in ACT_ microflows.
+#
+# The catalog reports the CURRENT Mendix action names -- ShowPageAction,
+# ClosePageAction, MicroflowCallAction -- while this list originally held
+# only the older Form-era spellings (ShowFormAction, CloseFormAction) and
+# expected sub-microflow calls to arrive as the activity type
+# "SubMicroflow". The result was that the rule flagged exactly the three
+# things its own documentation says it permits: on this project that was
+# 11 false positives out of 13 findings, which buries the 2 real ones.
+#
+# Both spellings are kept so the rule works whichever names a given mxcli
+# / Mendix version reports.
 ALLOWED_ACTIONS = (
+    # current names
+    "ShowPageAction",
+    "ClosePageAction",
+    "MicroflowCallAction",
+    # older names, kept for compatibility
     "ShowFormAction",
     "CloseFormAction",
     "ShowHomeFormAction",

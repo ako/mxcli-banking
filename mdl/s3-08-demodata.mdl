@@ -1,0 +1,22 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: a third demo customer
+--
+-- Needed to demonstrate the legacy cross-customer delete is gone. That
+-- bug was
+--
+--   delete from bene where tacc = <request parameter>
+--
+-- with no owner clause, so it removed that payee for EVERY customer who
+-- had registered it. Reproducing it takes two customers who have both
+-- registered the SAME target account — with only rahul and priya, each
+-- can only register the other, and the targets differ.
+--
+-- meera is that third account. rahul and priya can both register her, and
+-- rahul removing his payee must leave priya's untouched.
+--
+-- The Slice 1 after-startup microflow gives her an account, and the Slice
+-- 2 one gives that account a ledger, with no changes needed here.
+-- =====================================================================
+
+CREATE DEMO USER 'meera' PASSWORD 'RRCustomer2026!' ENTITY Banking.Customer (Customer);
+/

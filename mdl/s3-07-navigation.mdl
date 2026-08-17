@@ -1,0 +1,17 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: navigation
+--
+-- The legacy left menu called this "BENEFICIERY"; the spelling is not
+-- carried over.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Administration.Account_Overview FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+    MENU ITEM 'Account statement' PAGE Banking.Statement_Overview;
+    MENU ITEM 'Mini statement' PAGE Banking.MiniStatement_Overview;
+    MENU ITEM 'Beneficiaries' PAGE Banking.Beneficiary_Overview;
+  );
+/

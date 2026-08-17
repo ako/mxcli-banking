@@ -385,6 +385,13 @@ Both test files now navigate to `/logout` before closing each page. If logins
 start failing for no reason, check the runtime log for this message before
 suspecting passwords, and restart the app to clear the accumulated sessions.
 
+**Slice 3 update:** `/logout` helps but is not enough. The beneficiary suite
+opens six sessions across three users, and running it immediately followed by
+the Slice 1 and 2 suites hit the cap again. Sessions are released lazily, so the
+practical rule is **restart the app between test suites**, not merely sign out
+within them. Budget for this when adding suites — it is a licence limit, not
+something to engineer around.
+
 ### `CREATE MICROFLOW` is not re-runnable; `exec` applies scripts that fail `check`
 
 Two operational gotchas that cost a cycle each:
@@ -395,6 +402,120 @@ Two operational gotchas that cost a cycle each:
 - `mxcli exec` does **not** refuse a script that `mxcli check` flags as an
   error. A page with an invalid widget property was written to the model
   anyway. Always run `check` before `exec` and read its output.
+
+---
+
+## 2026-08-17 — Slice 3 (beneficiaries)
+
+### mxcli resolves NO forward references — not microflows, not pages, not either to the other
+
+The single biggest structural constraint on how a slice's scripts are laid
+out. A `CALL MICROFLOW` to something created later in the same file fails:
+
+```
+statement 5: microflow 'Banking.ACT_SaveBeneficiary' has validation errors:
+  - CALL MICROFLOW 'Banking.ACT_UpdateBeneficiary': microflow not found
+  hint: ... is defined later in this script — move its create statement before this one
+```
+
+The same applies to a page whose button opens a page defined further down
+(`failed to resolve page: page not found`), and to a microflow that shows a
+page. mxcli's hint is good, but the failure mode is not: with
+`--continue-on-error` everything *around* the failing statement succeeds, so the
+model ends up partially updated and looks fine until `mx check` runs.
+
+Because this slice has a cycle at the design level — the overview opens the
+form, the form's save returns to the overview — it has to be applied in five
+files in dependency order:
+
+| file | contents |
+|---|---|
+| `s3-03` | microflows that touch no page |
+| `s3-04` | `Beneficiary_NewEdit` (its Save button needs s3-03) |
+| `s3-05` | `ACT_NewBeneficiary` / `ACT_EditBeneficiary` (they show the s3-04 page) |
+| `s3-06` | `Beneficiary_Overview` (its buttons need s3-05) |
+| `s3-07` | navigation (needs s3-06) |
+
+Within a file, define callees first.
+
+### Row-level security makes associated objects unreadable, not just unlisted
+
+`Banking.Account` is readable only when it is the current user's, which is
+correct — and it means a customer cannot read the *payee's* account row at all.
+The `Beneficiary_TargetAccount` association resolves fine, but a grid column
+bound to `Beneficiary_TargetAccount/AccountLabel` renders **empty**, because the
+far side is not readable.
+
+So anything the customer must see about another customer's object has to be
+copied onto a row they do own. `Banking.Beneficiary.TargetAccountNumber` is that
+copy — which is also exactly what the legacy `bene.tacc` was, and is arguably
+the more honest record: the number as registered, frozen at that moment.
+
+The general rule: with row-level security, denormalise across the security
+boundary or the UI silently shows blanks.
+
+### `Show Message` is BLOCKING and MDL cannot change that
+
+`SHOW MESSAGE 'x';` renders a modal with an OK button that stops the page until
+dismissed. MDL accepts `TYPE Information|Warning|Error` but no Blocking control
+— `NON-BLOCKING`, `NONBLOCKING`, `BLOCKING false` and `NOT BLOCKING` are all
+parse errors.
+
+Measured consequence: a browser test clicked Remove, and the row count stayed at
+1 for 8 seconds with `dialogs: 1` on screen. The delete had actually succeeded —
+the OQL showed the row gone — but the modal was covering the page and the next
+click hit it instead of the grid.
+
+Success messages were removed for this reason; only failures interrupt. The
+refreshed list is the confirmation for a success.
+
+### A microflow-datasource grid does not refresh after a delete
+
+Same root cause as the Slice 2 statement grid: Mendix has no dependency
+information for a microflow datasource, so nothing tells it to re-run. For a
+delete there is not even an object left to refresh. The tests re-navigate to the
+page rather than trusting in-place refresh, and that is what a user does too.
+
+Worth revisiting if the list ever feels stale in real use.
+
+### `id` is an XPath pseudo-attribute, not a member
+
+`FIND($List, id = $Object)` fails the build with
+`CE1613 "The selected attribute 'Banking.Account.id' no longer exists."`
+It works fine inside an XPath *constraint* (`[id = $Target]`), so push the
+comparison into the retrieve instead of filtering a retrieved list.
+
+### `RETRIEVE ... LIMIT 1` returns an object, not a list
+
+`HEAD()` over it is `CE0097 "The selected 'X' variable must be of type List."`
+Either drop the `LIMIT 1` and keep `HEAD`, or keep `LIMIT 1` and use the
+variable directly. Both spellings appear in this project — with `LIMIT 1` where
+one row is wanted, `HEAD` where the retrieve is unbounded.
+
+### A page parameter of a non-persistable entity cannot appear in a URL
+
+Two errors from one cause: `CE5601` (a parameterised page needs a URL parameter
+segment) and `CE5605` (a non-persistable parameter cannot be used in a URL). The
+fix is to give the page no `Url` at all — it is only ever reached from a
+microflow. Worth knowing before designing a form page around a non-persistent
+object.
+
+### The shipped CONV010 lint rule flagged exactly what it permits
+
+`.claude/lint-rules/conv010_act_microflow_content.star` documents that ACT_
+microflows may contain show-page, close-page, show-message and sub-microflow
+calls — but its `ALLOWED_ACTIONS` list held only the older Form-era names
+(`ShowFormAction`, `CloseFormAction`) and expected sub-microflow calls to arrive
+as the activity type `SubMicroflow`. The catalog reports the current names:
+`ShowPageAction`, `ClosePageAction`, `MicroflowCallAction`.
+
+Result: 11 false positives out of 13 findings, which buried the 2 real ones
+(a retrieve in `ACT_SaveBeneficiary`, an object change in
+`ACT_RefreshStatement`). The rule now lists both spellings, and both real
+findings are fixed. Lint is back to the 2 known deferred warnings.
+
+Worth checking the other bundled rules against the catalog's vocabulary before
+trusting a clean run.
 
 ### Open security items, deliberately deferred
 

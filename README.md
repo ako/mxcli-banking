@@ -65,8 +65,8 @@ browser, not at a layer.
 |---|---|---|
 | 1 | Foundation, identity, home — Customer/Branch/Account, roles, row-level security, dashboard, demo data | **Done** |
 | 2 | Ledger and statements — Transaction, account statement with date range, mini statement | **Done** |
-| 3 | Beneficiaries — CRUD with validation | Next |
-| 4 | Transfers — atomic, server-side limit and balance checks | |
+| 3 | Beneficiaries — CRUD with validation | **Done** |
+| 4 | Transfers — atomic, server-side limit and balance checks | Next |
 | 5 | Bill payments — Biller reference data | |
 | 6 | Profile and credentials — change name/mobile/password, SMS notification seam | |
 | 7 | Open an additional account | |
@@ -78,9 +78,14 @@ investments, downloadable forms, loan applications, forgot-password.
 ### Model scripts
 
 Every model change is an MDL script under `mdl/`, applied with
-`./mxcli exec`. They are the source of truth and are re-runnable in order —
-Slice 1 was rebuilt from them once already. `mdl/s1-00-teardown.mdl` explains
-why that mattered.
+`./mxcli exec`. They are the source of truth and are re-runnable **in filename
+order** — Slice 1 was rebuilt from them once already, and
+`mdl/s1-00-teardown.mdl` explains why that mattered.
+
+Order is not cosmetic. mxcli resolves no forward references: a microflow that
+calls one defined later in the same file, or a page whose button opens a page
+defined below it, fails to build. Slice 3 is split across five files for
+exactly this reason — see the header comment in `mdl/s3-04-pages.mdl`.
 
 ### Demo logins
 
@@ -90,6 +95,7 @@ Demo users are enabled (development only — see `FINDINGS.md`).
 |---|---|---|
 | `rahul` | `RRCustomer2026!` | Customer |
 | `priya` | `RRCustomer2026!` | Customer |
+| `meera` | `RRCustomer2026!` | Customer |
 | `admin` | `RRAdmin2026!!` | Administrator |
 
 ### Verifying
@@ -99,6 +105,7 @@ Demo users are enabled (development only — see `FINDINGS.md`).
 ./mxcli lint -p RRNetBanking.mpr -m Banking                  # conventions
 node tests/verify-s1-dashboard.mjs                           # browser, app must be running
 node tests/verify-s2-statements.mjs
+node tests/verify-s3-beneficiaries.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.

@@ -1,0 +1,25 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: security for beneficiaries
+--
+-- Read is constrained to payees registered against one of the customer's
+-- own accounts. No CREATE, no DELETE and no WRITE is granted to anybody:
+-- every mutation goes through an ACT_ microflow that re-checks ownership
+-- server-side (lint CONV006).
+--
+-- That is the structural fix for the legacy cross-customer delete. Even
+-- if a client sent the id of somebody else's beneficiary, there is no
+-- entity access path that would let it be written or deleted, and the
+-- microflow checks the owner before acting.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.Beneficiary (READ *)
+  WHERE '[Banking.Beneficiary_OwnerAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']';
+/
+
+GRANT Banking.Administrator ON Banking.Beneficiary (READ *);
+/
+
+-- Non-persistent form state: no rows to constrain, but the page cannot
+-- bind to it without a rule.
+GRANT Banking.AccountHolder ON Banking.BeneficiaryForm (READ *, WRITE *);
+/
