@@ -1,0 +1,83 @@
+-- =====================================================================
+-- RRNetBanking — Slice 4: the transfer page
+--
+-- Replaces TRANSFERMONEY.jsp and TRANSFERMONEY1.jsp, which were two pages
+-- because the first had to re-query the database to build a beneficiary
+-- dropdown and the second had to re-query it again to display the limit.
+--
+-- One page here. The payer account is not on the form at all — it comes
+-- from the selected payee — so there is no from-account field to tamper
+-- with, which is how the legacy servlet's transfer() was exploitable.
+-- =====================================================================
+
+/**
+ * Transfer money to a registered payee.
+ *
+ * The payee dropdown reads Banking.Beneficiary through a DATABASE
+ * datasource rather than a microflow. That is safe here precisely because
+ * it is a database source: entity access rules DO apply to client
+ * database retrieves, so the list is already constrained to the
+ * customer's own payees. (A microflow datasource would not be — see the
+ * Slice 2 finding.)
+ */
+CREATE OR REPLACE PAGE Banking.Transfer_NewEdit
+  (
+    Title: 'Transfer money',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'transfer',
+    Folder: 'Transfers'
+  )
+  {
+    LAYOUTGRID lgTransfer {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (Content: 'Transfer money', RenderMode: H2)
+          CONTAINER cntIntro {
+            DYNAMICTEXT dtIntro (
+              Content: 'Money can only be sent to a registered payee, and never more than that payee''s transfer limit or the balance on the account it is registered against.'
+            )
+          }
+        }
+      }
+
+      ROW rowForm {
+        COLUMN colForm (DesktopWidth: 12) {
+          DATAVIEW dvTransfer (DataSource: MICROFLOW Banking.DS_NewTransferForm) {
+            COMBOBOX cbPayee (
+              Label: 'Payee',
+              Association: TransferForm_Beneficiary,
+              DataSource: DATABASE Banking.Beneficiary,
+              CaptionAttribute: PayeeLabel
+            )
+            TEXTBOX txtAmount (Label: 'Amount', Attribute: Amount)
+            TEXTBOX txtRemarks (Label: 'Remarks', Attribute: Remarks)
+
+            FOOTER footerTransfer {
+              ACTIONBUTTON btnTransfer (
+                Caption: 'Transfer',
+                Action: MICROFLOW Banking.ACT_SubmitTransfer(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+            }
+          }
+        }
+      }
+
+      ROW rowHistory {
+        COLUMN colHistory (DesktopWidth: 12) {
+          DYNAMICTEXT dtHistoryHeading (Content: 'Recent transfers', RenderMode: H3)
+          DATAGRID dgTransfers (DataSource: MICROFLOW Banking.DS_MyTransfers) {
+            COLUMN colWhen (Attribute: ExecutedOn, Caption: 'Date')
+            COLUMN colPayee (Attribute: PayeeLabel, Caption: 'Payee')
+            COLUMN colAmount (Attribute: Amount, Caption: 'Amount')
+            COLUMN colRemarks (Attribute: Remarks, Caption: 'Remarks')
+            COLUMN colReference (Attribute: Reference, Caption: 'Reference')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Transfer_NewEdit TO Banking.AccountHolder;
+/

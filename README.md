@@ -66,14 +66,20 @@ browser, not at a layer.
 | 1 | Foundation, identity, home — Customer/Branch/Account, roles, row-level security, dashboard, demo data | **Done** |
 | 2 | Ledger and statements — Transaction, account statement with date range, mini statement | **Done** |
 | 3 | Beneficiaries — CRUD with validation | **Done** |
-| 4 | Transfers — atomic, server-side limit and balance checks | Next |
-| 5 | Bill payments — Biller reference data | |
+| 4 | Transfers — atomic, server-side limit and balance checks | **Done** |
+| 5 | Bill payments — Biller reference data | Next |
 | 6 | Profile and credentials — change name/mobile/password, SMS notification seam | |
 | 7 | Open an additional account | |
 | 8 | Public content, loans brochure, admin back-office | |
 
 Parked by decision, present in the source document but never implemented in it:
 investments, downloadable forms, loan applications, forgot-password.
+
+**Known limitation carried forward from Slice 4:** the transfer balance check is
+read-then-write with no row lock, so two simultaneous transfers from the same
+account could overdraw it. Each transfer is atomic; a pair is not serialisable.
+See `FINDINGS.md` for the three ways to close it — this is a must-fix before any
+real deployment.
 
 ### Model scripts
 
@@ -106,6 +112,7 @@ Demo users are enabled (development only — see `FINDINGS.md`).
 node tests/verify-s1-dashboard.mjs                           # browser, app must be running
 node tests/verify-s2-statements.mjs
 node tests/verify-s3-beneficiaries.mjs
+node tests/verify-s4-transfers.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.

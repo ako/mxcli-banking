@@ -225,8 +225,12 @@ FOLDER 'Actions'
 BEGIN
   RETRIEVE $Owner FROM $Form/Banking.BeneficiaryForm_OwnerAccount;
 
+  -- PayeeLabel is maintained here and in SUB_UpdateBeneficiaryFields.
+  -- Added in Slice 4: the transfer page picks a payee from a ComboBox,
+  -- and Mendix ComboBox captions must be String attributes.
   $New = CREATE Banking.Beneficiary (
     TargetAccountNumber = $Target/AccountNumber,
+    PayeeLabel = toString($Target/AccountNumber) + ' — ' + $Form/Nickname,
     Nickname = $Form/Nickname,
     TransferLimit = $Form/TransferLimit,
     Banking.Beneficiary_OwnerAccount = $Owner,
@@ -262,6 +266,7 @@ BEGIN
 
   CHANGE $Confirmed (
     Nickname = $Form/Nickname,
+    PayeeLabel = toString($Confirmed/TargetAccountNumber) + ' — ' + $Form/Nickname,
     TransferLimit = $Form/TransferLimit
   ) COMMIT;
 

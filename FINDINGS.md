@@ -517,6 +517,103 @@ findings are fixed. Lint is back to the 2 known deferred warnings.
 Worth checking the other bundled rules against the catalog's vocabulary before
 trusting a clean run.
 
+---
+
+## 2026-08-17 — Slice 4 (transfers)
+
+### A microflow is one database transaction — that is the whole atomicity fix
+
+Nothing had to be built for this. A Mendix microflow runs inside a single
+transaction, and an error anywhere in it rolls back everything it did. So
+putting the debit, the credit, the transfer record and both ledger lines in one
+microflow gives all-or-nothing behaviour for free.
+
+That is the entire difference from `PDAOU.transfer()`, which ran four
+independent statements wrapped in `catch(Exception e){System.out.println(e);}`.
+The Java was not missing a transaction API — it was missing the *intent*.
+
+The corollary is that "Continue" error handling would silently defeat it by
+swallowing the error and letting the flow proceed with a half-done transfer.
+Lint CONV014 flags it; nothing in this project uses it.
+
+Verified by invariant rather than by inspection: total across all accounts was
+75,000 before and after, and each rejected transfer left both the balances and
+the ledger row-count untouched.
+
+### ⚠ KNOWN LIMITATION: the balance check is read-then-write, with no lock
+
+`SUB_ExecuteTransfer` reads the balance, `VAL_TransferAmount` checks it, then
+the microflow writes the new one. Two transfers from the same account arriving
+at the same moment can both pass the check and overdraw the account. The
+transaction guarantees each transfer is *atomic*; it does not make the pair
+*serialisable*.
+
+Mendix offers no row-level lock inside a microflow, so closing this needs one
+of:
+
+- optimistic concurrency — store a version on the account, re-read and retry on
+  mismatch;
+- serialising transfers per account through a task queue;
+- pushing the debit into a database-level conditional update
+  (`... set balance = balance - :amt where id = :id and balance >= :amt`) via a
+  Java action, and treating "0 rows affected" as insufficient funds.
+
+Not addressed in this slice, and deliberately not papered over. For a real
+deployment this is a must-fix, and the third option is the one I would reach
+for first.
+
+### `SHOW MESSAGE`: `TYPE` goes before `OBJECTS`, and the error says otherwise
+
+```mdl
+SHOW MESSAGE 'Reference {1}.' TYPE Information OBJECTS [$x];   -- ok
+SHOW MESSAGE 'Reference {1}.' OBJECTS [$x] TYPE Information;   -- parse error
+```
+
+The wrong order is reported as `mismatched input 'TYPE'` followed by *"'Type' is
+a reserved keyword in MDL. Use a different name like Type_"* — which sends you
+looking for an identifier clash that does not exist. It is a clause-ordering
+problem, not a naming one.
+
+### Message parameters must be strings
+
+`OBJECTS [$Transfer/Reference]` where `Reference` is an AutoNumber fails the
+build with `CE0117 "Error(s) in expression."` — no indication of which
+expression or why. Wrap it: `OBJECTS [toString($Transfer/Reference)]`.
+
+### Denormalising across the security boundary, again
+
+Third instance of the same pattern, now with a shape worth naming:
+
+| Attribute | Why it exists |
+|---|---|
+| `Account.AccountLabel` | ComboBox captions must be String; AccountNumber is AutoNumber |
+| `Beneficiary.TargetAccountNumber` | the payee's Account row is unreadable to the payer |
+| `Beneficiary.PayeeLabel` | ComboBox caption again, on the transfer page |
+| `Transfer.TargetAccountNumber` / `PayeeLabel` | history must survive the payee being removed |
+
+Two forces produce these: Mendix requires String captions in selectors, and
+row-level security makes other customers' rows unreadable through an
+association. Both push the same way — copy what the user must see onto a row
+they own. Worth budgeting for one such attribute per selector and per
+cross-customer display from the start.
+
+The last row is a different reason and a better one: `Transfer_Beneficiary`
+deliberately nullifies on delete, so removing a payee neither blocks nor
+destroys the transfer history. The denormalised copy is what keeps that history
+readable.
+
+### Database datasources DO apply entity access — microflow datasources do not
+
+Worth stating alongside the Slice 2 finding, because they pull in opposite
+directions. The transfer page's payee ComboBox reads
+`DataSource: DATABASE Banking.Beneficiary` with no constraint of its own, and
+that is safe: entity access rules apply to client database retrieves, so the
+dropdown only ever lists the customer's own payees. The same lack of a
+constraint in a *microflow* datasource is the leak Slice 2 fixed.
+
+Rule of thumb: a database datasource is constrained by the model; a microflow
+datasource is constrained only by what you write in it.
+
 ### Open security items, deliberately deferred
 
 Two lint warnings are accepted for now and must be closed before any real

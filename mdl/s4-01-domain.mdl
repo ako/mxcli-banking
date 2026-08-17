@@ -1,0 +1,112 @@
+-- =====================================================================
+-- RRNetBanking — Slice 4 (Transfers): domain model
+--
+-- The legacy system had no transfer record at all. PDAOU.transfer() ran
+-- four unguarded statements in a row —
+--
+--   update accd set bal=bal-<amt> where cac=<from>
+--   insert into widep values(<from>, ..., 'W', <amt>)
+--   update accd set bal=bal+<amt> where cac=<to>
+--   insert into widep values(<to>,   ..., 'D', <amt>)
+--
+-- — inside a try block whose catch did nothing but System.out.println.
+-- A failure after the first statement destroyed money; a failure after
+-- the third created it, and nothing recorded that a transfer had been
+-- attempted.
+--
+-- Banking.Transfer is that missing record: one row per transfer, joined
+-- to the two ledger lines it produced.
+-- =====================================================================
+
+/**
+ * One completed transfer between accounts.
+ *
+ * The payee's account number and label are copied onto the transfer
+ * rather than read through Transfer_Beneficiary, for two reasons: the
+ * payee's Account row is not readable by this customer (see the Slice 3
+ * note), and a payee may be removed later — the history has to survive
+ * that, which is why Transfer_Beneficiary nullifies rather than blocks.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Transfer (
+  Reference: AutoNumber DEFAULT 900000001,
+  Amount: Decimal NOT NULL,
+  ExecutedOn: DateTime NOT NULL,
+  TargetAccountNumber: Long,
+  PayeeLabel: String(140),
+  Remarks: String(200)
+)
+INDEX (ExecutedOn)
+COMMENT 'One completed transfer. The legacy system recorded nothing.';
+/
+
+/**
+ * The debited account.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Transfer_FromAccount
+  FROM Banking.Transfer TO Banking.Account
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Account the money left. An account with history cannot be deleted.';
+/
+
+/**
+ * The payee used, where it still exists.
+ *
+ * Default delete behaviour on purpose: removing a payee must not be
+ * blocked by past transfers, and must not delete them either. The
+ * reference is nullified and the denormalised number and label carry the
+ * history.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Transfer_Beneficiary
+  FROM Banking.Transfer TO Banking.Beneficiary
+  TYPE Reference
+  COMMENT 'Payee used, nullified if the payee is later removed.';
+/
+
+/**
+ * Links a ledger line back to the transfer that produced it, so a
+ * statement row can be traced to its cause. Both the debit on the payer
+ * and the credit on the payee point at the same transfer.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Transaction_Transfer
+  FROM Banking.Transaction TO Banking.Transfer
+  TYPE Reference
+  COMMENT 'The transfer this ledger line came from, if any.';
+/
+
+/**
+ * A display label for a payee: "100000003 — Meera rent".
+ *
+ * Needed because Mendix ComboBox captions must be String attributes, and
+ * the transfer page selects a payee from a dropdown. Maintained by the
+ * beneficiary microflows in Slice 3.
+ */
+ALTER ENTITY Banking.Beneficiary
+  ADD ATTRIBUTE IF NOT EXISTS PayeeLabel: String(140);
+/
+
+/**
+ * Form state for making a transfer.
+ *
+ * The payer account is NOT on this form: it is derived from the selected
+ * payee, which already knows which account it is registered against.
+ * That removes a whole class of tampering — there is no from-account
+ * field to swap — and matches how the legacy pages worked, where `cac`
+ * came from the session rather than the request.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.TransferForm (
+  Amount: Decimal,
+  Remarks: String(200)
+)
+COMMENT 'Form state for the transfer page. Not stored.';
+/
+
+/**
+ * The payee being paid. Constrained to the customer's own payees by the
+ * entity access rule on Banking.Beneficiary.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.TransferForm_Beneficiary
+  FROM Banking.TransferForm TO Banking.Beneficiary
+  TYPE Reference
+  COMMENT 'Payee selected on the transfer page.';
+/
