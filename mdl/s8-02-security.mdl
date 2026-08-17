@@ -1,0 +1,54 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: security
+--
+-- Loan products are reference data: customers read, administrators
+-- manage. As everywhere else, no CREATE or DELETE is granted — the
+-- back-office writes through microflows (lint CONV006).
+--
+-- ON PUBLIC PAGES: the legacy app had an unauthenticated front page
+-- (1st.jsp, contact.jsp, services.jsp) that anyone could browse. Making
+-- those anonymous here means enabling guest access, which changes the
+-- app's attack surface and is flagged by lint SEC004 and SEC007. That is
+-- a decision for the bank, not a detail to slip in, so the Contact and
+-- Services pages below are behind the login like everything else.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.LoanProduct (READ *)
+  WHERE '[IsActive = true]';
+/
+GRANT Banking.Administrator ON Banking.LoanProduct (READ *, WRITE *);
+/
+
+/**
+ * Narrowing Slice 5's biller rule, now that IsActive is something an
+ * administrator can actually change.
+ *
+ * Slice 5 granted AccountHolder an unconstrained READ, and the bill
+ * payment page's company dropdown is a CLIENT database retrieve over
+ * Banking.Biller — client retrieves DO apply entity access, unlike the
+ * microflow retrieves that caused the Slice 1 leak — so an unconstrained
+ * rule meant a deactivated biller stayed in the dropdown. The payment
+ * itself was already refused server-side by VAL_BillPaymentForm's
+ * IsActive check, so this was a bad-error-message bug rather than a hole;
+ * it is still the difference between the back-office switch doing what it
+ * says and doing half of it.
+ *
+ * Payment history is unaffected: BillPayment denormalises BillerName, so
+ * a past payment to a since-deactivated biller still renders.
+ */
+GRANT Banking.AccountHolder ON Banking.Biller (READ *)
+  WHERE '[IsActive = true]';
+/
+
+GRANT Banking.Administrator ON Banking.BillerForm (READ *, WRITE *);
+/
+GRANT Banking.Administrator ON Banking.LoanProductForm (READ *, WRITE *);
+/
+GRANT Banking.Administrator ON Banking.AdminSummary (READ *);
+/
+
+-- The back office needs to see the customer base it supports.
+GRANT Banking.Administrator ON Banking.Customer (READ *);
+/
+GRANT Banking.Administrator ON Banking.Account (READ *);
+/

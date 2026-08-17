@@ -1,0 +1,182 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2: seed a ledger
+--
+-- Slice 1 opened each demo account with a balance of 25000 and no
+-- history, which makes a statement page impossible to demo. This adds an
+-- opening credit and a few debits per account that arrive at exactly that
+-- balance, with BalanceAfter tracking correctly line by line:
+--
+--   +30000  opening deposit        -> 30000
+--    -3000  bill payment           -> 27000
+--    -2000  transfer out           -> 25000
+--
+-- Dated across the past three weeks so the statement's default 30-day
+-- range shows them and a narrower range visibly filters.
+--
+-- Idempotent on "does this account already have ledger lines", so it is
+-- safe on the existing database and on restart. It deliberately does NOT
+-- touch Account.Balance: the seeded lines are built to agree with the
+-- 25000 that Slice 1 already set.
+-- =====================================================================
+
+/**
+ * Write the opening ledger for one account.
+ *
+ * Called per account by SUB_SeedTransactions. Kept separate so the
+ * caller's loop stays under the activity-count guidance and so the lines
+ * are committed as one list rather than one commit per line (CONV011).
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedLedgerForAccount (
+  $Account: Banking.Account
+)
+RETURNS Boolean AS $Written
+FOLDER 'Demo data'
+BEGIN
+  $Lines = CREATE LIST OF Banking.Transaction;
+
+  $Opening = CREATE Banking.Transaction (
+    BookedOn = addDays([%CurrentDateTime%], -21),
+    TransactionType = Banking.ENUM_TransactionType.Credit,
+    Amount = 30000,
+    BalanceAfter = 30000,
+    Description = 'Opening deposit',
+    Banking.Transaction_Account = $Account
+  );
+  ADD $Opening TO $Lines;
+
+  $BillPayment = CREATE Banking.Transaction (
+    BookedOn = addDays([%CurrentDateTime%], -14),
+    TransactionType = Banking.ENUM_TransactionType.Debit,
+    Amount = 3000,
+    BalanceAfter = 27000,
+    Description = 'Bill payment - Reliance Comm.',
+    Banking.Transaction_Account = $Account
+  );
+  ADD $BillPayment TO $Lines;
+
+  $Transfer = CREATE Banking.Transaction (
+    BookedOn = addDays([%CurrentDateTime%], -3),
+    TransactionType = Banking.ENUM_TransactionType.Debit,
+    Amount = 2000,
+    BalanceAfter = 25000,
+    Description = 'Transfer to beneficiary',
+    Banking.Transaction_Account = $Account
+  );
+  ADD $Transfer TO $Lines;
+
+  COMMIT $Lines;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Give every account without history an opening ledger.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedTransactions ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account;
+
+  LOOP $Account IN $Accounts BEGIN
+    RETRIEVE $Existing FROM $Account/Banking.Transaction_Account;
+    $ExistingCount = COUNT($Existing);
+
+    IF $ExistingCount = 0 THEN
+      $Ignored = CALL MICROFLOW Banking.SUB_SeedLedgerForAccount (
+        Account = $Account
+      );
+    END IF;
+  END LOOP;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Fill in AccountLabel for any account that has none.
+ *
+ * This has to be a second pass: AccountNumber is an AutoNumber, so it has
+ * no value until the account is committed, and the label is built from it.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BackfillAccountLabels ()
+RETURNS Boolean AS $Filled
+FOLDER 'Demo data'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[AccountLabel = empty]';
+
+  $ToCommit = CREATE LIST OF Banking.Account;
+
+  LOOP $Account IN $Accounts BEGIN
+    RETRIEVE $Branch FROM $Account/Banking.Account_Branch;
+
+    CHANGE $Account (
+      AccountLabel = toString($Account/AccountNumber) + ' — ' + $Branch/BranchName
+    );
+    ADD $Account TO $ToCommit;
+  END LOOP;
+
+  COMMIT $ToCommit;
+
+  RETURN true;
+END;
+/
+
+/**
+ * After-startup seeding, extended for Slice 2.
+ *
+ * Replaces the Slice 1 version to add the ledger step. It is redefined
+ * here rather than edited in s1-05 so that the slice scripts stay
+ * runnable in order on an empty project: s1-05 cannot call a microflow
+ * that s2-05 has not created yet.
+ *
+ * Runs in the system context, so entity access rules do not apply.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SCH_AfterStartup ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  $MainBranch = CALL MICROFLOW Banking.SUB_SeedBranches();
+
+  RETRIEVE $Customers FROM Banking.Customer;
+
+  $CustomersToCommit = CREATE LIST OF Banking.Customer;
+  $AccountsToCommit = CREATE LIST OF Banking.Account;
+
+  LOOP $Customer IN $Customers BEGIN
+    RETRIEVE $ExistingAccounts FROM $Customer/Banking.Account_Customer;
+    $AccountCount = COUNT($ExistingAccounts);
+
+    IF $AccountCount = 0 THEN
+      CHANGE $Customer (
+        FullName = 'Demo Customer ' + $Customer/Name,
+        Address = '12 MG Road, Mumbai',
+        MobileNumber = '9566137117'
+      );
+      ADD $Customer TO $CustomersToCommit;
+
+      $Account = CREATE Banking.Account (
+        Balance = 25000,
+        Status = Banking.ENUM_AccountStatus.Active,
+        OpenedOn = [%CurrentDateTime%],
+        Banking.Account_Customer = $Customer,
+        Banking.Account_Branch = $MainBranch
+      );
+      ADD $Account TO $AccountsToCommit;
+    END IF;
+  END LOOP;
+
+  COMMIT $CustomersToCommit;
+  COMMIT $AccountsToCommit;
+
+  -- Both of these need the accounts committed first: the ledger has to
+  -- reference them, and the label is built from the AutoNumber that
+  -- commit assigns.
+  $LabelsFilled = CALL MICROFLOW Banking.SUB_BackfillAccountLabels();
+  $LedgerSeeded = CALL MICROFLOW Banking.SUB_SeedTransactions();
+
+  RETURN true;
+END;
+/

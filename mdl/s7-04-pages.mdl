@@ -1,0 +1,72 @@
+-- =====================================================================
+-- RRNetBanking — Slice 7: the open-an-account page
+--
+-- Replaces newregistration.jsp, minus its two worst ideas: the new login
+-- (see s7-01) and the account number shown in a disabled input backed by
+-- a tamperable hidden field. There is no account-number field here at
+-- all — the number is assigned at commit and reported afterwards.
+-- =====================================================================
+
+/**
+ * Open an additional account under the existing login.
+ */
+CREATE OR REPLACE PAGE Banking.OpenAccount_NewEdit
+  (
+    Title: 'Open an account',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'open-account',
+    Folder: 'Accounts'
+  )
+  {
+    LAYOUTGRID lgOpen {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (Content: 'Open another account', RenderMode: H2)
+          CONTAINER cntIntro {
+            DYNAMICTEXT dtIntro (
+              Content: 'The new account is opened under your existing login, with a zero balance. Your account number is assigned by the bank when the account is opened.'
+            )
+          }
+        }
+      }
+
+      ROW rowForm {
+        COLUMN colForm (DesktopWidth: 12) {
+          DATAVIEW dvOpen (DataSource: MICROFLOW Banking.DS_NewOpenAccountForm) {
+            COMBOBOX cbBranch (
+              Label: 'Branch',
+              Association: OpenAccountForm_Branch,
+              DataSource: DATABASE Banking.Branch,
+              CaptionAttribute: BranchName
+            )
+            CHECKBOX chkAcknowledge (
+              Label: 'I want to open another account',
+              Attribute: Acknowledged
+            )
+            FOOTER footerOpen {
+              ACTIONBUTTON btnOpen (
+                Caption: 'Open account',
+                Action: MICROFLOW Banking.ACT_OpenAccount(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+            }
+          }
+        }
+      }
+
+      ROW rowExisting {
+        COLUMN colExisting (DesktopWidth: 12) {
+          DYNAMICTEXT dtExistingHeading (Content: 'Accounts you hold', RenderMode: H3)
+          DATAGRID dgExisting (DataSource: MICROFLOW Banking.DS_MyDashboard) {
+            COLUMN colAccount (Attribute: AccountLabel, Caption: 'Account')
+            COLUMN colBranch (Attribute: BranchName, Caption: 'Branch')
+            COLUMN colBalance (Attribute: Balance, Caption: 'Balance')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.OpenAccount_NewEdit TO Banking.AccountHolder;
+/

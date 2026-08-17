@@ -1,0 +1,18 @@
+-- =====================================================================
+-- RRNetBanking — Slice 4: security for transfers
+--
+-- Read is constrained to transfers that left one of the customer's own
+-- accounts. Nobody gets CREATE, WRITE or DELETE on Banking.Transfer —
+-- the record is written by SUB_ExecuteTransfer and never edited, which is
+-- what makes it usable as an audit trail rather than just a log.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.Transfer (READ *)
+  WHERE '[Banking.Transfer_FromAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']';
+/
+
+GRANT Banking.Administrator ON Banking.Transfer (READ *);
+/
+
+GRANT Banking.AccountHolder ON Banking.TransferForm (READ *, WRITE *);
+/

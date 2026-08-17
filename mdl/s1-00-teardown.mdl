@@ -1,0 +1,58 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: teardown of the Banking module
+--
+-- WHY THIS EXISTS
+--
+-- 'ALTER ENTITY ... DROP ATTRIBUTE' removes the attribute but leaves the
+-- validation rule that a NOT NULL created behind, pointing at an
+-- attribute that no longer exists. 'mx check' then fails with
+--
+--   CE1613 "The selected attribute 'Banking.Customer.FullName' no longer
+--           exists." at Validation rule of entity 'Banking.Customer'
+--
+-- and MDL has no statement that can remove a validation rule (no
+-- DROP VALIDATION RULE), while DESCRIBE ENTITY does not emit validation
+-- rules at all, so the orphan is invisible to a describe/edit/exec
+-- round-trip. Rebuilding the entity is the only route back to a clean
+-- model with mxcli alone.
+--
+-- Because Mendix references documents by GUID, everything that points at
+-- Banking.Customer has to go with it and be recreated from the slice
+-- scripts: recreating an entity under the same qualified name does NOT
+-- rebind existing references to it.
+--
+-- Run order: this script, then s1-01 … s1-06.
+-- This is idempotent-ish by design — run it with --continue-on-error, as
+-- statements fail harmlessly when the object is already gone.
+-- =====================================================================
+
+-- The settings reference has to be cleared before the microflow can go.
+ALTER SETTINGS MODEL AfterStartupMicroflow = '';
+/
+
+DROP PAGE Banking.Home_Dashboard;
+/
+
+DROP MICROFLOW Banking.SCH_AfterStartup;
+/
+DROP MICROFLOW Banking.SUB_SeedBranches;
+/
+DROP MICROFLOW Banking.DS_MyAccounts;
+/
+DROP MICROFLOW Banking.DS_CurrentCustomer;
+/
+
+-- Demo users are typed to Banking.Customer, so they block the drop.
+DROP DEMO USER 'rahul';
+/
+DROP DEMO USER 'priya';
+/
+
+-- Drop the association before the entity: an association left pointing at
+-- a dropped-and-recreated entity keeps the OLD GUID and mxbuild fails with
+-- KeyNotFoundException.
+DROP ASSOCIATION Banking.Account_Customer;
+/
+
+DROP ENTITY Banking.Customer;
+/

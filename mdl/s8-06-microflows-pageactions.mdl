@@ -1,0 +1,126 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: microflows that open the back-office forms
+--
+-- Split from s8-03 because they SHOW the pages created in s8-05, and
+-- must themselves exist before the overviews in s8-07 can bind buttons
+-- to them.
+-- =====================================================================
+
+/**
+ * A blank biller form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildNewBillerForm ()
+RETURNS Banking.BillerForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  $Form = CREATE Banking.BillerForm (IsActive = true);
+  RETURN $Form;
+END;
+/
+
+/**
+ * A biller form prefilled from an existing biller.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildEditBillerForm (
+  $Biller: Banking.Biller
+)
+RETURNS Banking.BillerForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  $Form = CREATE Banking.BillerForm (
+    BillerCode = $Biller/BillerCode,
+    BillerName = $Biller/BillerName,
+    Category = $Biller/Category,
+    IsActive = $Biller/IsActive,
+    Banking.BillerForm_Biller = $Biller
+  );
+  RETURN $Form;
+END;
+/
+
+CREATE OR REPLACE MICROFLOW Banking.ACT_NewBiller ()
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildNewBillerForm();
+  SHOW PAGE Banking.Biller_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+CREATE OR REPLACE MICROFLOW Banking.ACT_EditBiller (
+  $Biller: Banking.Biller
+)
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildEditBillerForm (Biller = $Biller);
+  SHOW PAGE Banking.Biller_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+/**
+ * A blank loan product form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildNewLoanProductForm ()
+RETURNS Banking.LoanProductForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  $Form = CREATE Banking.LoanProductForm (IsActive = true);
+  RETURN $Form;
+END;
+/
+
+/**
+ * A loan product form prefilled from an existing product.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildEditLoanProductForm (
+  $Product: Banking.LoanProduct
+)
+RETURNS Banking.LoanProductForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  $Form = CREATE Banking.LoanProductForm (
+    ProductCode = $Product/ProductCode,
+    ProductName = $Product/ProductName,
+    LoanType = $Product/LoanType,
+    InterestRate = $Product/InterestRate,
+    Summary = $Product/Summary,
+    IsActive = $Product/IsActive,
+    Banking.LoanProductForm_LoanProduct = $Product
+  );
+  RETURN $Form;
+END;
+/
+
+CREATE OR REPLACE MICROFLOW Banking.ACT_NewLoanProduct ()
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildNewLoanProductForm();
+  SHOW PAGE Banking.LoanProduct_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+CREATE OR REPLACE MICROFLOW Banking.ACT_EditLoanProduct (
+  $Product: Banking.LoanProduct
+)
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildEditLoanProductForm (Product = $Product);
+  SHOW PAGE Banking.LoanProduct_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.ACT_NewBiller TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_EditBiller TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_NewLoanProduct TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_EditLoanProduct TO Banking.Administrator;
+/

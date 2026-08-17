@@ -1,0 +1,135 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: seed the loan products
+--
+-- The three the legacy loan.jsp listed — Home, Education and Vehicle —
+-- each of which linked to the same LOAN.doc and carried no rate, no term
+-- and no eligibility text anywhere in the application. The rates below
+-- are placeholder content for the brochure, not the bank's rates; the
+-- point of the slice is that they are now records an administrator can
+-- change rather than markup that needs a redeploy.
+--
+-- Idempotent on ProductCode, like the branches in Slice 1 and the billers
+-- in Slice 5.
+-- =====================================================================
+
+/**
+ * Create one loan product if its code is not already taken.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedLoanProduct (
+  $Code: String,
+  $Name: String,
+  $LoanType: Banking.ENUM_LoanType,
+  $Rate: Decimal,
+  $Summary: String
+)
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  RETRIEVE $Matches FROM Banking.LoanProduct
+    WHERE '[ProductCode = $Code]';
+  $ExistingCount = COUNT($Matches);
+
+  IF $ExistingCount > 0 THEN
+    RETURN false;
+  END IF;
+
+  $New = CREATE Banking.LoanProduct (
+    ProductCode = $Code,
+    ProductName = $Name,
+    LoanType = $LoanType,
+    InterestRate = $Rate,
+    Summary = $Summary,
+    IsActive = true
+  ) COMMIT;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Seed the loan brochure.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedLoanProducts ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  $A = CALL MICROFLOW Banking.SUB_SeedLoanProduct (
+    Code = 'HOME',
+    Name = 'RR Home Loan',
+    LoanType = Banking.ENUM_LoanType.Home,
+    Rate = 8.5,
+    Summary = 'For buying, building or extending a home. Terms up to 20 years, with the property as security.'
+  );
+  $B = CALL MICROFLOW Banking.SUB_SeedLoanProduct (
+    Code = 'EDU',
+    Name = 'RR Education Loan',
+    LoanType = Banking.ENUM_LoanType.Education,
+    Rate = 9.25,
+    Summary = 'For tuition, living costs and study materials in India or abroad. Repayment begins after the course ends.'
+  );
+  $C = CALL MICROFLOW Banking.SUB_SeedLoanProduct (
+    Code = 'VEH',
+    Name = 'RR Vehicle Loan',
+    LoanType = Banking.ENUM_LoanType.Vehicle,
+    Rate = 10.75,
+    Summary = 'For a new or used car or two-wheeler. Terms up to 7 years, with the vehicle as security.'
+  );
+
+  RETURN true;
+END;
+/
+
+/**
+ * After-startup seeding, extended for Slice 8.
+ *
+ * Redefined here rather than edited in the earlier slices so the scripts
+ * stay runnable in filename order on an empty project: an earlier script
+ * cannot call a microflow a later one has not created yet.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SCH_AfterStartup ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  $MainBranch = CALL MICROFLOW Banking.SUB_SeedBranches();
+  $BillersSeeded = CALL MICROFLOW Banking.SUB_SeedBillers();
+  $LoansSeeded = CALL MICROFLOW Banking.SUB_SeedLoanProducts();
+
+  RETRIEVE $Customers FROM Banking.Customer;
+
+  $CustomersToCommit = CREATE LIST OF Banking.Customer;
+  $AccountsToCommit = CREATE LIST OF Banking.Account;
+
+  LOOP $Customer IN $Customers BEGIN
+    RETRIEVE $ExistingAccounts FROM $Customer/Banking.Account_Customer;
+    $AccountCount = COUNT($ExistingAccounts);
+
+    IF $AccountCount = 0 THEN
+      CHANGE $Customer (
+        FullName = 'Demo Customer ' + $Customer/Name,
+        Address = '12 MG Road, Mumbai',
+        MobileNumber = '9566137117'
+      );
+      ADD $Customer TO $CustomersToCommit;
+
+      $Account = CREATE Banking.Account (
+        Balance = 25000,
+        Status = Banking.ENUM_AccountStatus.Active,
+        OpenedOn = [%CurrentDateTime%],
+        Banking.Account_Customer = $Customer,
+        Banking.Account_Branch = $MainBranch
+      );
+      ADD $Account TO $AccountsToCommit;
+    END IF;
+  END LOOP;
+
+  COMMIT $CustomersToCommit;
+  COMMIT $AccountsToCommit;
+
+  -- Both need the accounts committed first: the ledger references them,
+  -- and the label is built from the AutoNumber that commit assigns.
+  $LabelsFilled = CALL MICROFLOW Banking.SUB_BackfillAccountLabels();
+  $LedgerSeeded = CALL MICROFLOW Banking.SUB_SeedTransactions();
+
+  RETURN true;
+END;
+/

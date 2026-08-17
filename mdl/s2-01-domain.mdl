@@ -1,0 +1,96 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2 (Ledger and statements): domain model
+--
+-- Replaces the legacy widep(cac, ddate, dtime, type, amount) table, where
+-- 'type' was a varchar(1) holding 'W' or 'D' and the row carried no
+-- reference and no resulting balance — so a statement could never be
+-- reconciled against accd.bal, which was mutated in place.
+--
+-- Two things are new relative to the legacy schema:
+--   * Reference, so every ledger line can be cited.
+--   * BalanceAfter, so a statement is self-checking. The legacy design
+--     made this impossible: the balance lived only in accd.bal and was
+--     overwritten on every transfer.
+-- =====================================================================
+
+/**
+ * Direction of a ledger line, from the account holder's point of view.
+ * Legacy: widep.type, a varchar(1) of 'W' (withdrawal) or 'D' (deposit).
+ */
+CREATE OR MODIFY ENUMERATION Banking.ENUM_TransactionType (
+  Debit 'Debit',
+  Credit 'Credit'
+);
+/
+
+/**
+ * One line of an account's ledger.
+ *
+ * Append-only: no entity access rule grants WRITE or DELETE on this
+ * entity to anybody, including administrators. Lines are written by the
+ * transfer and bill-payment microflows in later slices, and by the demo
+ * seeding microflow.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Transaction (
+  Reference: AutoNumber DEFAULT 500000001,
+  BookedOn: DateTime NOT NULL,
+  TransactionType: Enumeration(Banking.ENUM_TransactionType),
+  Amount: Decimal NOT NULL,
+  BalanceAfter: Decimal,
+  Description: String(200)
+)
+INDEX (BookedOn)
+COMMENT 'Append-only ledger line. Legacy: the widep table.';
+/
+
+/**
+ * The account a ledger line belongs to. PREVENT, because deleting an
+ * account with history would silently destroy the ledger; accounts are
+ * closed by setting Status instead.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Transaction_Account
+  FROM Banking.Transaction TO Banking.Account
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Account this ledger line belongs to.';
+/
+
+/**
+ * A human-readable label for the account, e.g. "100000001 — RR Main Branch".
+ *
+ * Added in Slice 2 for the statement page's account picker. Mendix's
+ * ComboBox requires a *String* caption attribute (CE7247 "Only attributes
+ * of type String are allowed here"), and AccountNumber is an AutoNumber.
+ * An expression caption would avoid the extra attribute, but MDL exposes
+ * only `optionsSourceAssociationCaptionExpression`, not the database-
+ * options-source equivalent this widget needs.
+ *
+ * Maintained by the microflows that create accounts — it cannot be set at
+ * creation time because AutoNumber is only assigned on commit.
+ */
+ALTER ENTITY Banking.Account
+  ADD ATTRIBUTE IF NOT EXISTS AccountLabel: String(60);
+/
+
+/**
+ * The date range and account behind the statement page.
+ *
+ * Non-persistent: it is form state, not business data. Legacy
+ * afterenquery.jsp took the same two dates straight off the request and
+ * concatenated them into SQL.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.StatementFilter (
+  FromDate: DateTime,
+  ToDate: DateTime
+)
+COMMENT 'Form state for the account statement page. Not stored.';
+/
+
+/**
+ * The account the statement is being run for.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.StatementFilter_Account
+  FROM Banking.StatementFilter TO Banking.Account
+  TYPE Reference
+  COMMENT 'Account selected on the statement page.';
+/

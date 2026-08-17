@@ -1,0 +1,132 @@
+-- =====================================================================
+-- RRNetBanking — Slice 5 (Bill payments): domain model
+--
+-- The legacy bill payment was the most broken feature in the system, and
+-- broken in a way nobody would notice from the UI. transbill.jsp had the
+-- company dropdown hardcoded:
+--
+--   <select>
+--   <option SELECTED>Reliance Comm.</option>
+--   <option>TATA Indicom</option>
+--   </select>
+--
+-- with NO `name` attribute, so the browser never submitted it. Worse, the
+-- inner <form action="form_action.asp"> was nested inside the outer
+-- <form action="Controller">, so the amount posted to a page that does
+-- not exist in the project. What reached the servlet was an amount and
+-- nothing else, and PDAOU.uppay() simply debited the account:
+--
+--   update accd set bal=bal-<amt> where cac=<from>
+--   insert into widep values(<from>, ..., 'W', <amt>)
+--
+-- Money left the account and no record said where it went.
+--
+-- Billers are real reference data here, and a payment records which one.
+-- =====================================================================
+
+/**
+ * The kind of bill. The legacy prose named these — "You can pay
+ * telephone, electricity, insurance, credit cards and other bills" —
+ * while the dropdown offered two hardcoded telecom companies.
+ */
+CREATE OR MODIFY ENUMERATION Banking.ENUM_BillerCategory (
+  Telecom 'Telecom',
+  Electricity 'Electricity',
+  Insurance 'Insurance',
+  CreditCard 'Credit card',
+  Other 'Other'
+);
+/
+
+/**
+ * A company a customer can pay a bill to. Reference data, maintained by
+ * administrators; Slice 8 gives them a page for it.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Biller (
+  BillerCode: String(20) NOT NULL UNIQUE ERROR 'A biller with this code already exists.',
+  BillerName: String(100) NOT NULL,
+  Category: Enumeration(Banking.ENUM_BillerCategory),
+  IsActive: Boolean
+)
+COMMENT 'A payable company. Legacy: two hardcoded <option> tags.';
+/
+
+/**
+ * One completed bill payment.
+ *
+ * BillerName is denormalised for the same reason as the transfer's
+ * PayeeLabel: a biller may later be deactivated or renamed, and the
+ * payment history has to keep saying what was paid at the time.
+ *
+ * ConsumerNumber is an ADDITION to the legacy feature, not a
+ * reconstruction of it. The original captured only a company and an
+ * amount, which cannot identify which bill was being settled. It is
+ * required here.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.BillPayment (
+  Reference: AutoNumber DEFAULT 800000001,
+  Amount: Decimal NOT NULL,
+  PaidOn: DateTime NOT NULL,
+  ConsumerNumber: String(40),
+  BillerName: String(100)
+)
+INDEX (PaidOn)
+COMMENT 'One completed bill payment. The legacy system recorded no biller at all.';
+/
+
+/**
+ * The debited account.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.BillPayment_FromAccount
+  FROM Banking.BillPayment TO Banking.Account
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Account the money left.';
+/
+
+/**
+ * The biller paid. Nullifies rather than blocks, so a biller can be
+ * retired without either deleting or freezing its payment history — the
+ * denormalised BillerName carries it.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.BillPayment_Biller
+  FROM Banking.BillPayment TO Banking.Biller
+  TYPE Reference
+  COMMENT 'Biller paid, nullified if the biller is later removed.';
+/
+
+/**
+ * Links the ledger line back to the payment that caused it, mirroring
+ * Transaction_Transfer.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Transaction_BillPayment
+  FROM Banking.Transaction TO Banking.BillPayment
+  TYPE Reference
+  COMMENT 'The bill payment this ledger line came from, if any.';
+/
+
+/**
+ * Form state for paying a bill.
+ *
+ * Unlike the transfer form, this one does carry a payer account: a bill
+ * payment has no payee object to derive it from. It is re-resolved
+ * server-side under an ownership constraint before any money moves.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.BillPaymentForm (
+  Amount: Decimal,
+  ConsumerNumber: String(40)
+)
+COMMENT 'Form state for the bill payment page. Not stored.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.BillPaymentForm_FromAccount
+  FROM Banking.BillPaymentForm TO Banking.Account
+  TYPE Reference
+  COMMENT 'Account selected to pay from.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.BillPaymentForm_Biller
+  FROM Banking.BillPaymentForm TO Banking.Biller
+  TYPE Reference
+  COMMENT 'Biller selected on the form. The legacy dropdown had no name attribute, so this never reached the server at all.';
+/

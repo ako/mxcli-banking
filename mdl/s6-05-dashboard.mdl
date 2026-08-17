@@ -1,0 +1,76 @@
+-- =====================================================================
+-- RRNetBanking — Slice 6: the dashboard, rebuilt on the summary
+--
+-- Slice 1's dashboard listed accounts through two datasources and showed
+-- number, branch, balance and status. This one shows the summary instead:
+-- the same balance plus how many ledger lines the account has and when it
+-- last moved — the two things a customer actually opens a banking app to
+-- check.
+--
+-- The datasource is Banking.DS_MyDashboard, which builds
+-- Banking.DashboardCard objects. It was meant to be the
+-- Banking.AccountSummary OQL view; see the note in s6-01 for why MDL
+-- cannot read or secure one.
+-- =====================================================================
+
+/**
+ * The customer landing page, reached straight after login.
+ *
+ * Shows who is logged in, the anti-phishing notice carried over from the
+ * legacy afterlogin.jsp, and one summary row per account.
+ */
+CREATE OR REPLACE PAGE Banking.Home_Dashboard
+  (
+    Title: 'Internet Banking',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'home',
+    Folder: 'Home'
+  )
+  {
+    LAYOUTGRID lgDashboard {
+
+      ROW rowWelcome {
+        COLUMN colWelcome (DesktopWidth: 12) {
+          DATAVIEW dvCustomer (DataSource: MICROFLOW Banking.DS_CurrentCustomer) {
+            DYNAMICTEXT dtWelcome (
+              Content: 'Welcome, {1}',
+              ContentParams: [{1} = FullName],
+              RenderMode: H2
+            )
+            DYNAMICTEXT dtContact (
+              Content: 'Registered mobile: {1}',
+              ContentParams: [{1} = MobileNumber]
+            )
+          }
+        }
+      }
+
+      ROW rowSecurityNotice {
+        COLUMN colSecurityNotice (DesktopWidth: 12) {
+          CONTAINER cntSecurityNotice (Class: 'alert alert-warning') {
+            DYNAMICTEXT dtSecurityNotice (
+              Content: 'RR or any of its representatives never sends you email/SMS or calls you over phone to get your personal information, password or one time SMS (high security) password. Any such e-mail/SMS or phone call is an attempt to fraudulently withdraw money from your account through Internet Banking. Never respond to such email/SMS or phone call. Change your passwords immediately if you have accidentally revealed your credentials.'
+            )
+          }
+        }
+      }
+
+      ROW rowAccounts {
+        COLUMN colAccounts (DesktopWidth: 12) {
+          DYNAMICTEXT dtAccountsHeading (Content: 'Your accounts', RenderMode: H3)
+          DATAGRID dgAccounts (DataSource: MICROFLOW Banking.DS_MyDashboard) {
+            COLUMN colAccount (Attribute: AccountLabel, Caption: 'Account')
+            COLUMN colBranch (Attribute: BranchName, Caption: 'Branch')
+            COLUMN colBalance (Attribute: Balance, Caption: 'Balance')
+            COLUMN colCount (Attribute: TransactionCount, Caption: 'Transactions')
+            COLUMN colLast (Attribute: LastActivityOn, Caption: 'Last activity')
+          }
+        }
+      }
+
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Home_Dashboard TO Banking.AccountHolder;
+/

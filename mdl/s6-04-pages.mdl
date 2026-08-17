@@ -1,0 +1,90 @@
+-- =====================================================================
+-- RRNetBanking — Slice 6: the profile page
+--
+-- Replaces name.jsp, mobile.jsp and pass.jsp — three pages in the legacy
+-- app, each with one input and one button, each posting to a differently
+-- named Controller action.
+--
+-- The queued-notifications list at the bottom is the SMS seam made
+-- visible: it shows what the bank would have sent. Without it the seam is
+-- invisible and therefore untestable.
+-- =====================================================================
+
+/**
+ * Profile self-service: contact details, password, and the notifications
+ * those changes queued.
+ */
+CREATE OR REPLACE PAGE Banking.Profile_NewEdit
+  (
+    Title: 'Profile',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'profile',
+    Folder: 'Profile'
+  )
+  {
+    LAYOUTGRID lgProfile {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (Content: 'Your profile', RenderMode: H2)
+        }
+      }
+
+      ROW rowDetails {
+        COLUMN colDetails (DesktopWidth: 6) {
+          DYNAMICTEXT dtDetailsHeading (Content: 'Contact details', RenderMode: H3)
+          DATAVIEW dvProfile (DataSource: MICROFLOW Banking.DS_MyProfileForm) {
+            TEXTBOX txtFullName (Label: 'Name', Attribute: FullName)
+            TEXTBOX txtAddress (Label: 'Address', Attribute: Address)
+            TEXTBOX txtMobile (Label: 'Mobile number', Attribute: MobileNumber)
+            FOOTER footerProfile {
+              ACTIONBUTTON btnSaveProfile (
+                Caption: 'Save',
+                Action: MICROFLOW Banking.ACT_SaveProfile(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+            }
+          }
+        }
+
+        COLUMN colPassword (DesktopWidth: 6) {
+          DYNAMICTEXT dtPasswordHeading (Content: 'Change password', RenderMode: H3)
+          DATAVIEW dvPassword (DataSource: MICROFLOW Banking.DS_NewPasswordForm) {
+            TEXTBOX txtNewPassword (Label: 'New password', Attribute: NewPassword)
+            TEXTBOX txtConfirmPassword (Label: 'Confirm password', Attribute: ConfirmPassword)
+            FOOTER footerPassword {
+              ACTIONBUTTON btnChangePassword (
+                Caption: 'Change password',
+                Action: MICROFLOW Banking.ACT_ChangePassword(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+            }
+          }
+        }
+      }
+
+      ROW rowNotifications {
+        COLUMN colNotifications (DesktopWidth: 12) {
+          DYNAMICTEXT dtNotificationsHeading (
+            Content: 'Security notifications',
+            RenderMode: H3
+          )
+          CONTAINER cntNotificationsIntro {
+            DYNAMICTEXT dtNotificationsIntro (
+              Content: 'Messages queued for your registered mobile number. This app has no SMS provider wired up, so nothing is actually delivered — the queue is shown so the seam is visible.'
+            )
+          }
+          DATAGRID dgNotifications (DataSource: MICROFLOW Banking.DS_MyNotifications) {
+            COLUMN colQueuedOn (Attribute: QueuedOn, Caption: 'Queued')
+            COLUMN colChannel (Attribute: Channel, Caption: 'Channel')
+            COLUMN colRecipient (Attribute: Recipient, Caption: 'To')
+            COLUMN colMessage (Attribute: Message, Caption: 'Message')
+            COLUMN colSent (Attribute: IsSent, Caption: 'Sent')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Profile_NewEdit TO Banking.AccountHolder;
+/

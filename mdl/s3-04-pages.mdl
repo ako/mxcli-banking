@@ -1,0 +1,87 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: beneficiary pages
+--
+-- Replaces beneficiery.jsp (add), benemodify1/2.jsp (modify) and
+-- removebene.jsp (remove) — four pages in the legacy app, each opening its
+-- own JDBC connection and each rendering the same hand-built ADD/MODIFY/
+-- REMOVE image toolbar.
+--
+-- Here it is one overview with per-row actions and one form. Every button
+-- calls a microflow; none of them writes through the page, because no
+-- access rule grants CREATE, WRITE or DELETE on Banking.Beneficiary.
+-- =====================================================================
+
+-- SPLIT ACROSS FILES ON PURPOSE. mxcli resolves no forward references —
+-- not between microflows, not between pages, not from a microflow to a
+-- page — so the whole slice has to be applied in dependency order:
+--
+--   s3-03  microflows that touch no page   (ACT_SaveBeneficiary, ...)
+--   s3-04  Beneficiary_NewEdit             (its Save button needs s3-03)
+--   s3-05  ACT_NewBeneficiary / ACT_Edit   (they SHOW the s3-04 page)
+--   s3-06  Beneficiary_Overview            (its buttons need s3-05)
+--   s3-07  navigation                      (needs s3-06)
+--
+-- This file holds only the form page.
+
+
+/**
+ * Add or edit a payee.
+ *
+ * Opened with no parameter to add (the DataView's datasource microflow
+ * builds a blank form), or with a pre-filled form by ACT_EditBeneficiary.
+ *
+ * The payee account number is only editable when adding: on an edit the
+ * target is fixed, so that an existing limit cannot be re-pointed at an
+ * account that was never validated.
+ */
+CREATE OR REPLACE PAGE Banking.Beneficiary_NewEdit
+  (
+    Title: 'Payee',
+    Layout: Atlas_Core.Atlas_Default,
+    -- No Url: a page with a parameter needs a URL parameter segment
+    -- (CE5601), and a NON-PERSISTABLE parameter cannot be put in a URL at
+    -- all (CE5605). The page is only ever reached from a microflow.
+    Folder: 'Beneficiaries',
+    Params: { $Form: Banking.BeneficiaryForm }
+  )
+  {
+    LAYOUTGRID lgForm {
+      ROW rowForm {
+        COLUMN colForm (DesktopWidth: 12) {
+          -- Bound to the page parameter, not to a datasource microflow.
+          -- The page is opened both to add (ACT_NewBeneficiary builds a
+          -- blank form) and to edit (ACT_EditBeneficiary builds a
+          -- pre-filled one), and a datasource microflow cannot serve the
+          -- second case — SHOW PAGE ... ($Form = $Form) then fails with
+          -- CE1613 "The selected page parameter ... no longer exists."
+          DATAVIEW dvForm (DataSource: $Form) {
+            COMBOBOX cbOwner (
+              Label: 'From account',
+              Association: BeneficiaryForm_OwnerAccount,
+              DataSource: DATABASE Banking.Account,
+              CaptionAttribute: AccountLabel
+            )
+            TEXTBOX txtTarget (
+              Label: 'Payee account number',
+              Attribute: TargetAccountNumber
+            )
+            TEXTBOX txtNickname (Label: 'Nickname', Attribute: Nickname)
+            TEXTBOX txtLimit (Label: 'Transfer limit', Attribute: TransferLimit)
+
+            FOOTER footerForm {
+              ACTIONBUTTON btnSave (
+                Caption: 'Save',
+                Action: MICROFLOW Banking.ACT_SaveBeneficiary(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+              ACTIONBUTTON btnCancel (Caption: 'Cancel', Action: CLOSE_PAGE)
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Beneficiary_NewEdit TO Banking.AccountHolder;
+/

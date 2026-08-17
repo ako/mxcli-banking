@@ -1,0 +1,11 @@
+-- =====================================================================
+-- RRNetBanking — Slice 7: security
+--
+-- Only the form needs a rule. Banking.Account still grants no CREATE to
+-- anyone (lint CONV006) — the new account is created by
+-- SUB_OpenAccount, which attaches it to the logged-in customer rather
+-- than to whatever the client asked for.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.OpenAccountForm (READ *, WRITE *);
+/

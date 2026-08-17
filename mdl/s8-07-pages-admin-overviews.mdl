@@ -1,0 +1,262 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: the back office
+--
+-- The legacy app had no back office at all. Billers were two hardcoded
+-- <option> tags in bill.jsp, branches were a string typed into the
+-- registration form, and loan products were three <li> elements in
+-- loan.jsp linking to the same LOAN.doc. Changing any of them meant
+-- editing a JSP and redeploying.
+--
+-- The URLs are flat (backoffice-billers, not backoffice/billers), and the
+-- runtime serves them under /p/ — http://host/p/backoffice-billers, not
+-- http://host/backoffice-billers. Worth writing down because the wrong
+-- form fails SILENTLY: the browser gets a blank page rather than a 404, so
+-- a test that navigates there and asserts something is ABSENT passes for
+-- the wrong reason. The Slice 8 suite's customer-refusal checks did
+-- exactly that until an admin navigation to the same URL timed out.
+--
+-- Runs after s8-06: every button here calls a microflow that shows a page
+-- from s8-05, and mxcli resolves no forward references. The same rule
+-- applies WITHIN this file, which is why the dashboard comes last: its
+-- three SHOW_PAGE buttons target the overviews above it.
+-- =====================================================================
+
+/**
+ * The billers customers can pay.
+ *
+ * Deactivating rather than deleting is the only option offered: a biller
+ * is referenced by every BillPayment ever made to it, and the association
+ * is PREVENT-on-delete for exactly that reason. IsActive drives the
+ * customer-facing dropdown; the history stays intact.
+ */
+CREATE OR REPLACE PAGE Banking.Biller_Overview
+  (
+    Title: 'Billers',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'backoffice-billers',
+    Folder: 'Back office'
+  )
+  {
+    LAYOUTGRID lgBillers {
+      ROW rowBillersHeading {
+        COLUMN colBillersHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtBillersHeading (Content: 'Billers', RenderMode: H2)
+          CONTAINER cntBillersIntro {
+            DYNAMICTEXT dtBillersIntro (
+              Content: 'Customers can only pay a biller listed here and marked as accepting payments. Deactivate rather than delete — past payments reference the biller.'
+            )
+          }
+        }
+      }
+      ROW rowBillersAdd {
+        COLUMN colBillersAdd (DesktopWidth: 12) {
+          ACTIONBUTTON btnNewBiller (
+            Caption: 'Add biller',
+            Action: MICROFLOW Banking.ACT_NewBiller,
+            ButtonStyle: Primary
+          )
+        }
+      }
+      ROW rowBillersGrid {
+        COLUMN colBillersGrid (DesktopWidth: 12) {
+          DATAGRID dgBillers (DataSource: MICROFLOW Banking.DS_AllBillers) {
+            COLUMN colBillerCode (Attribute: BillerCode, Caption: 'Code')
+            COLUMN colBillerName (Attribute: BillerName, Caption: 'Company')
+            COLUMN colBillerCategory (Attribute: Category, Caption: 'Category')
+            COLUMN colBillerActive (Attribute: IsActive, Caption: 'Accepting payments')
+            COLUMN colBillerActions (Caption: 'Actions') {
+              ACTIONBUTTON btnEditBiller (
+                Caption: 'Edit',
+                Action: MICROFLOW Banking.ACT_EditBiller(Biller: $currentObject)
+              )
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * The loan products shown on the brochure page.
+ *
+ * Same reasoning on deactivation, for a different reason: nothing
+ * references a loan product yet, but an inactive product is how the bank
+ * withdraws an offer without losing the record of what was offered.
+ */
+CREATE OR REPLACE PAGE Banking.LoanProduct_Overview
+  (
+    Title: 'Loan products',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'backoffice-loanproducts',
+    Folder: 'Back office'
+  )
+  {
+    LAYOUTGRID lgLoanProducts {
+      ROW rowLoanProductsHeading {
+        COLUMN colLoanProductsHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtLoanProductsHeading (Content: 'Loan products', RenderMode: H2)
+          CONTAINER cntLoanProductsIntro {
+            DYNAMICTEXT dtLoanProductsIntro (
+              Content: 'What the Loans page shows customers. Only active products are listed there.'
+            )
+          }
+        }
+      }
+      ROW rowLoanProductsAdd {
+        COLUMN colLoanProductsAdd (DesktopWidth: 12) {
+          ACTIONBUTTON btnNewLoanProduct (
+            Caption: 'Add product',
+            Action: MICROFLOW Banking.ACT_NewLoanProduct,
+            ButtonStyle: Primary
+          )
+        }
+      }
+      ROW rowLoanProductsGrid {
+        COLUMN colLoanProductsGrid (DesktopWidth: 12) {
+          DATAGRID dgLoanProducts (DataSource: MICROFLOW Banking.DS_AllLoanProducts) {
+            COLUMN colProductCode (Attribute: ProductCode, Caption: 'Code')
+            COLUMN colProductName (Attribute: ProductName, Caption: 'Product')
+            COLUMN colProductType (Attribute: LoanType, Caption: 'Type')
+            COLUMN colProductRate (Attribute: InterestRate, Caption: 'Interest rate %')
+            COLUMN colProductActive (Attribute: IsActive, Caption: 'Shown to customers')
+            COLUMN colProductActions (Caption: 'Actions') {
+              ACTIONBUTTON btnEditLoanProduct (
+                Caption: 'Edit',
+                Action: MICROFLOW Banking.ACT_EditLoanProduct(Product: $currentObject)
+              )
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * The branch network — read-only, deliberately.
+ *
+ * There is no Add and no Edit here. Opening or closing a branch is a
+ * bank-network operation with premises, staff and regulatory filings
+ * behind it, and a branch is referenced by every account held at it. The
+ * seeding microflow creates the two this app needs; anything more is a
+ * conversation with the bank, not a form.
+ */
+CREATE OR REPLACE PAGE Banking.Branch_Overview
+  (
+    Title: 'Branches',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'backoffice-branches',
+    Folder: 'Back office'
+  )
+  {
+    LAYOUTGRID lgBranches {
+      ROW rowBranchesHeading {
+        COLUMN colBranchesHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtBranchesHeading (Content: 'Branches', RenderMode: H2)
+          CONTAINER cntBranchesIntro {
+            DYNAMICTEXT dtBranchesIntro (
+              Content: 'Read-only. Opening or closing a branch is not a web-form operation — contact network operations.'
+            )
+          }
+        }
+      }
+      ROW rowBranchesGrid {
+        COLUMN colBranchesGrid (DesktopWidth: 12) {
+          DATAGRID dgBranches (DataSource: MICROFLOW Banking.DS_AllBranches) {
+            COLUMN colBranchCode (Attribute: Code, Caption: 'Code')
+            COLUMN colBranchName (Attribute: BranchName, Caption: 'Branch')
+            COLUMN colBranchCity (Attribute: City, Caption: 'City')
+          }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * The administrator landing page.
+ *
+ * Figures only, no drill-down into customer records. An administrator can
+ * already reach individual accounts through Administration.Account_Overview
+ * for user management; giving the back office a second, richer view of
+ * everybody's balances is a decision with a compliance conversation behind
+ * it, not a page to add in passing.
+ */
+CREATE OR REPLACE PAGE Banking.Admin_Dashboard
+  (
+    Title: 'Back office',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'backoffice',
+    Folder: 'Back office'
+  )
+  {
+    LAYOUTGRID lgAdmin {
+
+      ROW rowAdminHeading {
+        COLUMN colAdminHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtAdminHeading (Content: 'Bank of RR — back office', RenderMode: H2)
+        }
+      }
+
+      ROW rowAdminTotals {
+        COLUMN colAdminTotals (DesktopWidth: 12) {
+          DATAVIEW dvAdminSummary (DataSource: MICROFLOW Banking.DS_AdminSummary) {
+            DYNAMICTEXT dtCustomers (
+              Content: 'Customers: {1}',
+              ContentParams: [{1} = CustomerCount]
+            )
+            DYNAMICTEXT dtAccounts (
+              Content: 'Accounts: {1}',
+              ContentParams: [{1} = AccountCount]
+            )
+            DYNAMICTEXT dtBalance (
+              Content: 'Total balance held: {1}',
+              ContentParams: [{1} = TotalBalance]
+            )
+            DYNAMICTEXT dtTransfers (
+              Content: 'Transfers made: {1}',
+              ContentParams: [{1} = TransferCount]
+            )
+            DYNAMICTEXT dtBillPayments (
+              Content: 'Bill payments made: {1}',
+              ContentParams: [{1} = BillPaymentCount]
+            )
+            DYNAMICTEXT dtBeneficiaries (
+              Content: 'Registered payees: {1}',
+              ContentParams: [{1} = BeneficiaryCount]
+            )
+          }
+        }
+      }
+
+      ROW rowAdminLinks {
+        COLUMN colAdminLinks (DesktopWidth: 12) {
+          DYNAMICTEXT dtReferenceHeading (Content: 'Reference data', RenderMode: H3)
+          ACTIONBUTTON btnGoBillers (
+            Caption: 'Billers',
+            Action: SHOW_PAGE Banking.Biller_Overview
+          )
+          ACTIONBUTTON btnGoLoanProducts (
+            Caption: 'Loan products',
+            Action: SHOW_PAGE Banking.LoanProduct_Overview
+          )
+          ACTIONBUTTON btnGoBranches (
+            Caption: 'Branches',
+            Action: SHOW_PAGE Banking.Branch_Overview
+          )
+        }
+      }
+
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Admin_Dashboard TO Banking.Administrator;
+/
+GRANT VIEW ON PAGE Banking.Biller_Overview TO Banking.Administrator;
+/
+GRANT VIEW ON PAGE Banking.LoanProduct_Overview TO Banking.Administrator;
+/
+GRANT VIEW ON PAGE Banking.Branch_Overview TO Banking.Administrator;
+/

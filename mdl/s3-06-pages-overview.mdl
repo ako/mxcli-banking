@@ -1,0 +1,76 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: the beneficiary overview page
+--
+-- Separate from s3-04 because its per-row buttons call the microflows in
+-- s3-05, which in turn open the page in s3-04. See the note in s3-04 for
+-- the full ordering.
+-- =====================================================================
+
+/**
+ * The customer's registered payees, with add, edit and remove.
+ */
+CREATE OR REPLACE PAGE Banking.Beneficiary_Overview
+  (
+    Title: 'Beneficiaries',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'beneficiaries',
+    Folder: 'Beneficiaries'
+  )
+  {
+    LAYOUTGRID lgBeneficiaries {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (
+            Content: 'Registered payees',
+            RenderMode: H2
+          )
+          CONTAINER cntIntro {
+            DYNAMICTEXT dtIntro (
+              Content: 'Money can only be transferred to an account registered here, and never more than its transfer limit in one go.'
+            )
+          }
+        }
+      }
+      ROW rowAdd {
+        COLUMN colAdd (DesktopWidth: 12) {
+          ACTIONBUTTON btnAdd (
+            Caption: 'Add payee',
+            Action: MICROFLOW Banking.ACT_NewBeneficiary,
+            ButtonStyle: Primary
+          )
+        }
+      }
+      ROW rowGrid {
+        COLUMN colGrid (DesktopWidth: 12) {
+          DATAGRID dgBeneficiaries (DataSource: MICROFLOW Banking.DS_MyBeneficiaries) {
+            COLUMN colRef (Attribute: Reference, Caption: 'Reference')
+            COLUMN colFrom (
+              Attribute: Beneficiary_OwnerAccount/AccountLabel,
+              Caption: 'From account'
+            )
+            -- The stored number, not Beneficiary_TargetAccount/AccountLabel:
+            -- the payee's Account row is not readable by this customer, so
+            -- traversing the association renders an empty cell.
+            COLUMN colTo (Attribute: TargetAccountNumber, Caption: 'Payee account')
+            COLUMN colNickname (Attribute: Nickname, Caption: 'Nickname')
+            COLUMN colLimit (Attribute: TransferLimit, Caption: 'Transfer limit')
+            COLUMN colActions (Caption: 'Actions') {
+              ACTIONBUTTON btnEdit (
+                Caption: 'Edit',
+                Action: MICROFLOW Banking.ACT_EditBeneficiary(Beneficiary: $currentObject)
+              )
+              ACTIONBUTTON btnRemove (
+                Caption: 'Remove',
+                Action: MICROFLOW Banking.ACT_RemoveBeneficiary(Beneficiary: $currentObject),
+                ButtonStyle: Danger
+              )
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Beneficiary_Overview TO Banking.AccountHolder;
+/

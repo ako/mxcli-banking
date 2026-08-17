@@ -1,0 +1,140 @@
+-- =====================================================================
+-- RRNetBanking — Slice 7: open-an-account microflows
+--
+-- ORDER: callee-first. LAYERING: ACT_ is thin.
+-- =====================================================================
+
+/**
+ * A blank open-account form, defaulted to the customer's existing branch
+ * so the common case needs no choice at all.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_NewOpenAccountForm ()
+RETURNS Banking.OpenAccountForm AS $Form
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY AccountNumber ASC;
+  $First = HEAD($Accounts);
+  RETRIEVE $Branch FROM $First/Banking.Account_Branch;
+
+  $Form = CREATE Banking.OpenAccountForm (
+    Acknowledged = false,
+    Banking.OpenAccountForm_Branch = $Branch
+  );
+
+  RETURN $Form;
+END;
+/
+
+/**
+ * A branch must be chosen and the terms acknowledged.
+ *
+ * The acknowledgement is new. The legacy page opened an account on a
+ * button press with no confirmation of any kind; a second bank account is
+ * a contractual thing and deserves one deliberate click.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_OpenAccountForm (
+  $Form: Banking.OpenAccountForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  RETRIEVE $Branch FROM $Form/Banking.OpenAccountForm_Branch;
+
+  IF $Branch = empty THEN
+    SHOW MESSAGE 'Choose the branch for the new account.' TYPE Warning;
+    RETURN false;
+  END IF;
+
+  IF $Form/Acknowledged != true THEN
+    VALIDATION FEEDBACK $Form/Acknowledged
+      MESSAGE 'Please confirm you want to open another account.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Open the account.
+ *
+ * The customer comes from the session, never from the form — there is no
+ * customer field to tamper with, in the same way the transfer page has no
+ * from-account field.
+ *
+ * The account number is assigned by AutoNumber at commit, which is why
+ * the label has to be filled afterwards. SUB_BackfillAccountLabels from
+ * Slice 2 already does exactly that for any account missing one, so it is
+ * reused rather than duplicated.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_OpenAccount (
+  $Form: Banking.OpenAccountForm
+)
+RETURNS Banking.Account AS $Account
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Customer FROM Banking.Customer
+    WHERE '[id = ''[%CurrentUser%]'']'
+    LIMIT 1;
+
+  IF $Customer = empty THEN
+    RETURN empty;
+  END IF;
+
+  RETRIEVE $Branch FROM $Form/Banking.OpenAccountForm_Branch;
+
+  $Account = CREATE Banking.Account (
+    Balance = 0,
+    Status = Banking.ENUM_AccountStatus.Active,
+    OpenedOn = [%CurrentDateTime%],
+    Banking.Account_Customer = $Customer,
+    Banking.Account_Branch = $Branch
+  ) COMMIT;
+
+  $Labelled = CALL MICROFLOW Banking.SUB_BackfillAccountLabels();
+
+  $Queued = CALL MICROFLOW Banking.SUB_QueueNotification (
+    Customer = $Customer,
+    Message = 'A new account has been opened in your name at Bank of RR. If this was not you, contact us immediately.'
+  );
+
+  RETURN $Account;
+END;
+/
+
+/**
+ * Open an additional account.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_OpenAccount (
+  $Form: Banking.OpenAccountForm
+)
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $IsValid = CALL MICROFLOW Banking.VAL_OpenAccountForm (Form = $Form);
+
+  IF $IsValid = false THEN
+    RETURN false;
+  END IF;
+
+  $Account = CALL MICROFLOW Banking.SUB_OpenAccount (Form = $Form);
+
+  IF $Account = empty THEN
+    SHOW MESSAGE 'Your profile could not be found.' TYPE Error;
+    RETURN false;
+  END IF;
+
+  SHOW MESSAGE 'Account {1} has been opened.'
+    TYPE Information
+    OBJECTS [toString($Account/AccountNumber)];
+
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_NewOpenAccountForm TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_OpenAccount TO Banking.AccountHolder;
+/

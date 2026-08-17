@@ -1,0 +1,18 @@
+-- =====================================================================
+-- RRNetBanking — Slice 4: navigation
+--
+-- "TRANSFER MONEY" sat third in the legacy left menu, right after the
+-- statements. Same position here.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Administration.Account_Overview FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+    MENU ITEM 'Account statement' PAGE Banking.Statement_Overview;
+    MENU ITEM 'Mini statement' PAGE Banking.MiniStatement_Overview;
+    MENU ITEM 'Transfer money' PAGE Banking.Transfer_NewEdit;
+    MENU ITEM 'Beneficiaries' PAGE Banking.Beneficiary_Overview;
+  );
+/

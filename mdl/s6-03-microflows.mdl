@@ -1,0 +1,354 @@
+-- =====================================================================
+-- RRNetBanking — Slice 6: profile, credentials and dashboard microflows
+--
+-- Legacy equivalents: name.jsp -> nameu(), mobile.jsp -> mobileu(),
+-- pass.jsp -> emailu() (misnamed in the original). Each posted a single
+-- field to the Controller, which wrote it straight into the database with
+-- no server-side validation:
+--
+--   update custd set cmobile=<param> where cid=<session>
+--
+-- The mobile rules that DID exist lived in JavaScript in mobile.jsp — ten
+-- digits, starting 7, 8 or 9 — and are enforced server-side here.
+--
+-- ORDER: callee-first. LAYERING: ACT_ is thin.
+-- =====================================================================
+
+/**
+ * One dashboard row per account the customer holds.
+ *
+ * This is what the Banking.AccountSummary view entity was meant to be,
+ * done in a microflow instead because MDL cannot read or secure a view
+ * (see s6-01). The aggregation is per account rather than one grouped
+ * query, so it is N+1 by construction — acceptable at one or two accounts
+ * per customer, and the reason the view is worth finishing in Studio Pro.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyDashboard ()
+RETURNS LIST OF Banking.DashboardCard AS $Cards
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY AccountNumber ASC;
+
+  $Cards = CREATE LIST OF Banking.DashboardCard;
+
+  LOOP $Account IN $Accounts BEGIN
+    RETRIEVE $Branch FROM $Account/Banking.Account_Branch;
+    RETRIEVE $Lines FROM $Account/Banking.Transaction_Account;
+    $LineCount = COUNT($Lines);
+    $Sorted = SORT($Lines, BookedOn DESC);
+    $Latest = HEAD($Sorted);
+
+    $Card = CREATE Banking.DashboardCard (
+      AccountNumber = $Account/AccountNumber,
+      AccountLabel = $Account/AccountLabel,
+      Balance = $Account/Balance,
+      BranchName = $Branch/BranchName,
+      TransactionCount = $LineCount,
+      LastActivityOn = $Latest/BookedOn
+    );
+    ADD $Card TO $Cards;
+  END LOOP;
+
+  RETURN $Cards;
+END;
+/
+
+/**
+ * Queue a notification. Nothing sends it — see the entity documentation.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_QueueNotification (
+  $Customer: Banking.Customer,
+  $Message: String
+)
+RETURNS Banking.Notification AS $Notification
+FOLDER 'Actions'
+BEGIN
+  $Notification = CREATE Banking.Notification (
+    Channel = Banking.ENUM_NotificationChannel.SMS,
+    Recipient = $Customer/MobileNumber,
+    Message = $Message,
+    QueuedOn = [%CurrentDateTime%],
+    IsSent = false,
+    Banking.Notification_Customer = $Customer
+  ) COMMIT;
+
+  RETURN $Notification;
+END;
+/
+
+/**
+ * The logged-in customer's notifications, newest first.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyNotifications ()
+RETURNS LIST OF Banking.Notification AS $Notifications
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Notifications FROM Banking.Notification
+    WHERE '[Banking.Notification_Customer = ''[%CurrentUser%]'']'
+    SORT BY QueuedOn DESC;
+  RETURN $Notifications;
+END;
+/
+
+/**
+ * The profile form, prefilled from the logged-in customer.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyProfileForm ()
+RETURNS Banking.ProfileForm AS $Form
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Customer FROM Banking.Customer
+    WHERE '[id = ''[%CurrentUser%]'']'
+    LIMIT 1;
+
+  $Form = CREATE Banking.ProfileForm (
+    FullName = $Customer/FullName,
+    Address = $Customer/Address,
+    MobileNumber = $Customer/MobileNumber
+  );
+
+  RETURN $Form;
+END;
+/
+
+/**
+ * A blank change-password form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_NewPasswordForm ()
+RETURNS Banking.PasswordForm AS $Form
+FOLDER 'Datasources'
+BEGIN
+  $Form = CREATE Banking.PasswordForm ();
+  RETURN $Form;
+END;
+/
+
+/**
+ * The mobile number rules, carried over from the legacy JavaScript:
+ * exactly ten digits, first digit 7, 8 or 9.
+ *
+ * The digits-only part of the legacy check (isNaN) is NOT reproduced —
+ * Mendix expressions have no regular-expression function, and expressing
+ * it would mean a Regular Expression document plus an entity validation
+ * rule, which lint CONV015 steers away from. Length and prefix are
+ * enforced; a full format check is a hardening item.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_MobileNumber (
+  $Form: Banking.ProfileForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/MobileNumber = empty THEN
+    VALIDATION FEEDBACK $Form/MobileNumber MESSAGE 'Enter a mobile number.';
+    RETURN false;
+  END IF;
+
+  IF length($Form/MobileNumber) != 10 THEN
+    VALIDATION FEEDBACK $Form/MobileNumber MESSAGE 'The mobile number must be 10 digits.';
+    RETURN false;
+  END IF;
+
+  DECLARE $First String = substring($Form/MobileNumber, 0, 1);
+
+  IF $First != '9' and $First != '8' and $First != '7' THEN
+    VALIDATION FEEDBACK $Form/MobileNumber MESSAGE 'The mobile number must start with 9, 8 or 7.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Validate the whole profile form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_ProfileForm (
+  $Form: Banking.ProfileForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/FullName = empty THEN
+    VALIDATION FEEDBACK $Form/FullName MESSAGE 'Enter your name.';
+    RETURN false;
+  END IF;
+
+  $MobileOk = CALL MICROFLOW Banking.VAL_MobileNumber (Form = $Form);
+
+  RETURN $MobileOk;
+END;
+/
+
+/**
+ * The new password must be present and must match its confirmation.
+ *
+ * Split out of ACT_ChangePassword so the ACT_ stays free of validation
+ * activities, like every other action in this app (lint CONV010).
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_PasswordForm (
+  $Form: Banking.PasswordForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/NewPassword = empty THEN
+    VALIDATION FEEDBACK $Form/NewPassword MESSAGE 'Enter a new password.';
+    RETURN false;
+  END IF;
+
+  IF $Form/NewPassword != $Form/ConfirmPassword THEN
+    VALIDATION FEEDBACK $Form/ConfirmPassword MESSAGE 'The two passwords do not match.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Write the profile changes, and queue an SMS when the mobile number
+ * actually changed.
+ *
+ * The legacy prose promised exactly this and shipped no SMS code.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ApplyProfile (
+  $Form: Banking.ProfileForm
+)
+RETURNS Boolean AS $Applied
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Customer FROM Banking.Customer
+    WHERE '[id = ''[%CurrentUser%]'']'
+    LIMIT 1;
+
+  IF $Customer = empty THEN
+    RETURN false;
+  END IF;
+
+  DECLARE $MobileChanged Boolean = $Customer/MobileNumber != $Form/MobileNumber;
+
+  CHANGE $Customer (
+    FullName = $Form/FullName,
+    Address = $Form/Address,
+    MobileNumber = $Form/MobileNumber
+  ) COMMIT;
+
+  IF $MobileChanged = true THEN
+    $Queued = CALL MICROFLOW Banking.SUB_QueueNotification (
+      Customer = $Customer,
+      Message = 'Your registered mobile number was changed. If this was not you, contact Bank of RR immediately.'
+    );
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Set a new password and queue an SMS about it.
+ *
+ * Assigning to the inherited Password member is what hashes it — the
+ * platform's own Administration.ChangePassword does the same thing with
+ * the same plain-String carrier.
+ *
+ * HARDENING ITEM: this does not require the current password, so anyone
+ * with a live session can change it. Mendix's own change-password
+ * microflow collects an OldPassword and does not verify it either, and
+ * the legacy app never asked for one. Verifying it needs a Java action —
+ * Mendix exposes no expression that checks a password against its hash.
+ * Recorded in FINDINGS.md.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ApplyPassword (
+  $Form: Banking.PasswordForm
+)
+RETURNS Boolean AS $Applied
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Customer FROM Banking.Customer
+    WHERE '[id = ''[%CurrentUser%]'']'
+    LIMIT 1;
+
+  IF $Customer = empty THEN
+    RETURN false;
+  END IF;
+
+  CHANGE $Customer (Password = $Form/NewPassword) COMMIT;
+
+  $Queued = CALL MICROFLOW Banking.SUB_QueueNotification (
+    Customer = $Customer,
+    Message = 'Your internet banking password was changed. If this was not you, contact Bank of RR immediately.'
+  );
+
+  RETURN true;
+END;
+/
+
+/**
+ * Save the profile.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SaveProfile (
+  $Form: Banking.ProfileForm
+)
+RETURNS Boolean AS $Saved
+FOLDER 'Actions'
+BEGIN
+  $IsValid = CALL MICROFLOW Banking.VAL_ProfileForm (Form = $Form);
+
+  IF $IsValid = false THEN
+    RETURN false;
+  END IF;
+
+  $Applied = CALL MICROFLOW Banking.SUB_ApplyProfile (Form = $Form);
+
+  IF $Applied = false THEN
+    SHOW MESSAGE 'Your profile could not be found.' TYPE Error;
+    RETURN false;
+  END IF;
+
+  SHOW MESSAGE 'Profile updated.' TYPE Information;
+  RETURN true;
+END;
+/
+
+/**
+ * Change the password.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_ChangePassword (
+  $Form: Banking.PasswordForm
+)
+RETURNS Boolean AS $Changed
+FOLDER 'Actions'
+BEGIN
+  $IsValid = CALL MICROFLOW Banking.VAL_PasswordForm (Form = $Form);
+
+  IF $IsValid = false THEN
+    RETURN false;
+  END IF;
+
+  $Applied = CALL MICROFLOW Banking.SUB_ApplyPassword (Form = $Form);
+
+  IF $Applied = false THEN
+    SHOW MESSAGE 'Your profile could not be found.' TYPE Error;
+    RETURN false;
+  END IF;
+
+  SHOW MESSAGE 'Password changed. A confirmation SMS has been queued.' TYPE Information;
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyDashboard TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyNotifications TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyProfileForm TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_NewPasswordForm TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SaveProfile TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_ChangePassword TO Banking.AccountHolder;
+/

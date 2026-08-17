@@ -1,0 +1,134 @@
+-- =====================================================================
+-- RRNetBanking — Slice 5: seed the billers
+--
+-- The two the legacy dropdown hardcoded, plus one per remaining category
+-- from the prose ("telephone, electricity, insurance, credit cards and
+-- other bills"), so each branch of ENUM_BillerCategory has something
+-- behind it.
+--
+-- Idempotent on BillerCode, like the branch seeding in Slice 1.
+-- =====================================================================
+
+/**
+ * Create one biller if its code is not already taken.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedBiller (
+  $Code: String,
+  $Name: String,
+  $Category: Banking.ENUM_BillerCategory
+)
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  RETRIEVE $Matches FROM Banking.Biller
+    WHERE '[BillerCode = $Code]';
+  $ExistingCount = COUNT($Matches);
+
+  IF $ExistingCount > 0 THEN
+    RETURN false;
+  END IF;
+
+  $New = CREATE Banking.Biller (
+    BillerCode = $Code,
+    BillerName = $Name,
+    Category = $Category,
+    IsActive = true
+  ) COMMIT;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Seed the biller list.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedBillers ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  -- The two from the legacy transbill.jsp dropdown.
+  $A = CALL MICROFLOW Banking.SUB_SeedBiller (
+    Code = 'RELCOM',
+    Name = 'Reliance Comm.',
+    Category = Banking.ENUM_BillerCategory.Telecom
+  );
+  $B = CALL MICROFLOW Banking.SUB_SeedBiller (
+    Code = 'TATAIND',
+    Name = 'TATA Indicom',
+    Category = Banking.ENUM_BillerCategory.Telecom
+  );
+
+  -- One per remaining category named in the legacy prose.
+  $C = CALL MICROFLOW Banking.SUB_SeedBiller (
+    Code = 'MSEB',
+    Name = 'Maharashtra State Electricity Board',
+    Category = Banking.ENUM_BillerCategory.Electricity
+  );
+  $D = CALL MICROFLOW Banking.SUB_SeedBiller (
+    Code = 'LICIND',
+    Name = 'Life Insurance Corporation',
+    Category = Banking.ENUM_BillerCategory.Insurance
+  );
+  $E = CALL MICROFLOW Banking.SUB_SeedBiller (
+    Code = 'RRCARD',
+    Name = 'RR Credit Card',
+    Category = Banking.ENUM_BillerCategory.CreditCard
+  );
+
+  RETURN true;
+END;
+/
+
+/**
+ * After-startup seeding, extended for Slice 5.
+ *
+ * Redefined here rather than edited in s1-05 / s2-05 so the slice scripts
+ * stay runnable in filename order on an empty project: an earlier script
+ * cannot call a microflow a later one has not created yet.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SCH_AfterStartup ()
+RETURNS Boolean AS $Seeded
+FOLDER 'Demo data'
+BEGIN
+  $MainBranch = CALL MICROFLOW Banking.SUB_SeedBranches();
+  $BillersSeeded = CALL MICROFLOW Banking.SUB_SeedBillers();
+
+  RETRIEVE $Customers FROM Banking.Customer;
+
+  $CustomersToCommit = CREATE LIST OF Banking.Customer;
+  $AccountsToCommit = CREATE LIST OF Banking.Account;
+
+  LOOP $Customer IN $Customers BEGIN
+    RETRIEVE $ExistingAccounts FROM $Customer/Banking.Account_Customer;
+    $AccountCount = COUNT($ExistingAccounts);
+
+    IF $AccountCount = 0 THEN
+      CHANGE $Customer (
+        FullName = 'Demo Customer ' + $Customer/Name,
+        Address = '12 MG Road, Mumbai',
+        MobileNumber = '9566137117'
+      );
+      ADD $Customer TO $CustomersToCommit;
+
+      $Account = CREATE Banking.Account (
+        Balance = 25000,
+        Status = Banking.ENUM_AccountStatus.Active,
+        OpenedOn = [%CurrentDateTime%],
+        Banking.Account_Customer = $Customer,
+        Banking.Account_Branch = $MainBranch
+      );
+      ADD $Account TO $AccountsToCommit;
+    END IF;
+  END LOOP;
+
+  COMMIT $CustomersToCommit;
+  COMMIT $AccountsToCommit;
+
+  -- Both need the accounts committed first: the ledger references them,
+  -- and the label is built from the AutoNumber that commit assigns.
+  $LabelsFilled = CALL MICROFLOW Banking.SUB_BackfillAccountLabels();
+  $LedgerSeeded = CALL MICROFLOW Banking.SUB_SeedTransactions();
+
+  RETURN true;
+END;
+/

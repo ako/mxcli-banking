@@ -1,0 +1,118 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: customer-facing content
+--
+-- Replaces loan.jsp, contact.jsp and services.jsp. The legacy loans page
+-- listed three products, each linking to the same LOAN.doc; these are
+-- real records so the back office can change a rate without redeploying.
+-- =====================================================================
+
+/**
+ * The loans brochure.
+ */
+CREATE OR REPLACE PAGE Banking.Loans_Overview
+  (
+    Title: 'Loans',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'loans',
+    Folder: 'Content'
+  )
+  {
+    LAYOUTGRID lgLoans {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (Content: 'Loans', RenderMode: H2)
+          CONTAINER cntIntro {
+            DYNAMICTEXT dtIntro (
+              Content: 'A simple and convenient service for getting loans. Speak to your branch to apply — applications are not yet available online.'
+            )
+          }
+        }
+      }
+      ROW rowGrid {
+        COLUMN colGrid (DesktopWidth: 12) {
+          DATAGRID dgLoans (DataSource: MICROFLOW Banking.DS_ActiveLoanProducts) {
+            COLUMN colName (Attribute: ProductName, Caption: 'Product')
+            COLUMN colType (Attribute: LoanType, Caption: 'Type')
+            COLUMN colRate (Attribute: InterestRate, Caption: 'Interest rate %')
+            COLUMN colSummary (Attribute: Summary, Caption: 'Details')
+          }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * Contact details. Legacy: contact.jsp.
+ */
+CREATE OR REPLACE PAGE Banking.Contact_Overview
+  (
+    Title: 'Contact us',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'contact',
+    Folder: 'Content'
+  )
+  {
+    LAYOUTGRID lgContact {
+      ROW rowContact {
+        COLUMN colContact (DesktopWidth: 12) {
+          DYNAMICTEXT dtContactHeading (Content: 'Contact Bank of RR', RenderMode: H2)
+          CONTAINER cntPhone {
+            DYNAMICTEXT dtPhone (Content: 'Phone banking: 1800 200 1234, 24 hours a day.')
+          }
+          CONTAINER cntBranchInfo {
+            DYNAMICTEXT dtBranchInfo (
+              Content: 'RR Main Branch, MG Road, Mumbai · RR City Branch, FC Road, Pune'
+            )
+          }
+          CONTAINER cntWarning (Class: 'alert alert-warning') {
+            DYNAMICTEXT dtWarning (
+              Content: 'We never ask for your password or a one-time SMS password by email, SMS or phone. Report anything that does to your branch immediately.'
+            )
+          }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * Products and services. Legacy: services.jsp, whose left column listed
+ * Netbanking, Bill Payment, Online Shopping and Mobile Banking Services.
+ */
+CREATE OR REPLACE PAGE Banking.Services_Overview
+  (
+    Title: 'Services',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'services',
+    Folder: 'Content'
+  )
+  {
+    LAYOUTGRID lgServices {
+      ROW rowServices {
+        COLUMN colServices (DesktopWidth: 12) {
+          DYNAMICTEXT dtServicesHeading (Content: 'Products and services', RenderMode: H2)
+          CONTAINER cntNet {
+            DYNAMICTEXT dtNet (Content: 'Netbanking — statements, transfers and payments from any browser.')
+          }
+          CONTAINER cntBill {
+            DYNAMICTEXT dtBill (Content: 'Bill payment — telephone, electricity, insurance and credit card bills.')
+          }
+          CONTAINER cntTransfer {
+            DYNAMICTEXT dtTransfer (Content: 'Transfers — send money to any registered payee within the transfer limit you set.')
+          }
+          CONTAINER cntLoans {
+            DYNAMICTEXT dtLoansService (Content: 'Loans — home, education and vehicle loans. See the Loans page.')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Loans_Overview TO Banking.AccountHolder;
+/
+GRANT VIEW ON PAGE Banking.Contact_Overview TO Banking.AccountHolder;
+/
+GRANT VIEW ON PAGE Banking.Services_Overview TO Banking.AccountHolder;
+/

@@ -1,0 +1,393 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: beneficiary microflows
+--
+-- Every mutation of Banking.Beneficiary lives here, because no entity
+-- access rule grants CREATE, WRITE or DELETE on it. Each one re-checks
+-- ownership against the logged-in user rather than trusting the object id
+-- the client sent.
+--
+-- The legacy validation was entirely client-side JavaScript in
+-- beneficiery.jsp — validateName() checked that the fields were filled,
+-- that the limit was numeric and greater than zero, and set a hidden
+-- "chk" field to "true" which the server then believed. Anything that did
+-- not run the script bypassed all of it.
+--
+-- Note where entity access NOT being applied to microflow retrieves is
+-- required rather than dangerous: resolving a target account number has
+-- to see accounts belonging to OTHER customers, since that is the whole
+-- point of a payee. Retrieves that must be constrained say so explicitly.
+--
+-- MESSAGES: only failures show a message. Mendix's Show Message is
+-- BLOCKING by default — it renders a modal with an OK button that stops
+-- everything until dismissed — and MDL cannot set the Blocking property
+-- (TYPE Information|Warning|Error is the only modifier it accepts). A
+-- modal after every successful add, edit and remove is the wrong trade in
+-- a banking app; the refreshed list is the confirmation. A failure is
+-- worth interrupting for.
+--
+-- LAYERING: ACT_ microflows are thin — decisions, validation feedback,
+-- messages and calls. All retrieving, creating, changing and deleting
+-- sits in SUB_ and VAL_ microflows (lint CONV010).
+--
+-- ORDER: defined callee-first. mxcli resolves no forward references; a
+-- CALL to a microflow created later in the same file fails with
+-- "microflow not found" and leaves the caller unwritten while everything
+-- around it succeeds.
+-- =====================================================================
+
+/**
+ * The payees registered against the logged-in customer's accounts.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyBeneficiaries ()
+RETURNS LIST OF Banking.Beneficiary AS $Beneficiaries
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Beneficiaries FROM Banking.Beneficiary
+    WHERE '[Banking.Beneficiary_OwnerAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY Reference ASC;
+  RETURN $Beneficiaries;
+END;
+/
+
+/**
+ * The transfer limit must be present and greater than zero.
+ *
+ * Legacy beneficiery.jsp checked this in JavaScript only, then trusted a
+ * hidden form field to say the check had run.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_TransferLimit (
+  $Form: Banking.BeneficiaryForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/TransferLimit = empty THEN
+    VALIDATION FEEDBACK $Form/TransferLimit MESSAGE 'Enter a transfer limit.';
+    RETURN false;
+  ELSIF $Form/TransferLimit <= 0 THEN
+    VALIDATION FEEDBACK $Form/TransferLimit MESSAGE 'The transfer limit must be greater than 0.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * The two rules that need the resolved target: it must not be one of the
+ * customer's own accounts, and it must not already be registered against
+ * the same owner account.
+ *
+ * Returns true when the payee is REJECTED, having shown the reason.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_BeneficiaryIsRegistrable (
+  $Form: Banking.BeneficiaryForm,
+  $Owner: Banking.Account,
+  $Target: Banking.Account
+)
+RETURNS Boolean AS $Rejected
+FOLDER 'Validation'
+BEGIN
+  -- Ask the database whether the target is one of mine, rather than
+  -- FIND(..., id = $Target) over a retrieved list: `id` is an XPath
+  -- pseudo-attribute, not a real member, so a list operation on it fails
+  -- the build with CE1613 "The selected attribute 'Banking.Account.id'
+  -- no longer exists."
+  --
+  -- No HEAD() either: a RETRIEVE with LIMIT 1 already yields a single
+  -- object, and HEAD() over it is CE0097 "must be of type List".
+  RETRIEVE $Mine FROM Banking.Account
+    WHERE '[id = $Target and Banking.Account_Customer = ''[%CurrentUser%]'']'
+    LIMIT 1;
+
+  IF $Mine != empty THEN
+    VALIDATION FEEDBACK $Form/TargetAccountNumber
+      MESSAGE 'That is your own account. Transfer between your accounts instead of registering it as a payee.';
+    RETURN true;
+  END IF;
+
+  RETRIEVE $Existing FROM Banking.Beneficiary
+    WHERE '[Banking.Beneficiary_OwnerAccount = $Owner
+            and Banking.Beneficiary_TargetAccount = $Target]';
+  $ExistingCount = COUNT($Existing);
+
+  IF $ExistingCount > 0 THEN
+    VALIDATION FEEDBACK $Form/TargetAccountNumber
+      MESSAGE 'That account is already registered as a payee for the selected account.';
+    RETURN true;
+  END IF;
+
+  RETURN false;
+END;
+/
+
+/**
+ * Validate the form and resolve the target account number to a real
+ * account. Returns the target account, or empty when the form is invalid
+ * (having already shown the customer why).
+ *
+ * Returning the resolved account rather than a boolean keeps the caller
+ * from having to look it up a second time.
+ *
+ * The rules, and where each comes from:
+ *   1. an owner account must be chosen               (new — legacy had one account)
+ *   2. the limit must be present and greater than 0  (legacy: client-side only)
+ *   3. the target account must exist                 (legacy: "ACCOUNT NO IS NOT EXIST")
+ *   4. the target must not be your own account       (legacy: "OWNER OF ACCOUNT NO IS SAME")
+ *   5. the payee must not already be registered      (new — legacy allowed duplicates)
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_BeneficiaryForm (
+  $Form: Banking.BeneficiaryForm
+)
+RETURNS Banking.Account AS $Target
+FOLDER 'Validation'
+BEGIN
+  RETRIEVE $Owner FROM $Form/Banking.BeneficiaryForm_OwnerAccount;
+
+  IF $Owner = empty THEN
+    SHOW MESSAGE 'Choose which of your accounts this payee should be registered against.' TYPE Warning;
+    RETURN empty;
+  END IF;
+
+  $LimitOk = CALL MICROFLOW Banking.VAL_TransferLimit (Form = $Form);
+
+  IF $LimitOk = false THEN
+    RETURN empty;
+  END IF;
+
+  IF $Form/TargetAccountNumber = empty THEN
+    VALIDATION FEEDBACK $Form/TargetAccountNumber MESSAGE 'Enter the account number to pay.';
+    RETURN empty;
+  END IF;
+
+  -- Deliberately unconstrained: a payee is by definition somebody else's
+  -- account, so this retrieve has to see beyond the current user.
+  DECLARE $Number Long = $Form/TargetAccountNumber;
+  RETRIEVE $Target FROM Banking.Account
+    WHERE '[AccountNumber = $Number]'
+    LIMIT 1;
+
+  IF $Target = empty THEN
+    VALIDATION FEEDBACK $Form/TargetAccountNumber MESSAGE 'No account with that number exists.';
+    RETURN empty;
+  END IF;
+
+  $Rejected = CALL MICROFLOW Banking.VAL_BeneficiaryIsRegistrable (
+    Form = $Form,
+    Owner = $Owner,
+    Target = $Target
+  );
+
+  IF $Rejected = true THEN
+    RETURN empty;
+  END IF;
+
+  RETURN $Target;
+END;
+/
+
+/**
+ * Re-read a beneficiary through a retrieve constrained to the logged-in
+ * customer, returning empty when it is not theirs.
+ *
+ * THIS is the fix for the legacy cross-customer delete. removebene.jsp ran
+ *
+ *   delete from bene where tacc = <request parameter>
+ *
+ * with no owner clause at all, so removing your own payee removed that
+ * payee for every customer in the bank. Re-reading under the constraint
+ * means a tampered id resolves to nothing and the caller does nothing.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ConfirmBeneficiaryIsMine (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Banking.Beneficiary AS $Confirmed
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Confirmed FROM Banking.Beneficiary
+    WHERE '[id = $Beneficiary
+            and Banking.Beneficiary_OwnerAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    LIMIT 1;
+  RETURN $Confirmed;
+END;
+/
+
+/**
+ * Write a new beneficiary. The caller has already validated the form and
+ * resolved the target.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_CreateBeneficiary (
+  $Form: Banking.BeneficiaryForm,
+  $Target: Banking.Account
+)
+RETURNS Boolean AS $Created
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Owner FROM $Form/Banking.BeneficiaryForm_OwnerAccount;
+
+  -- PayeeLabel is maintained here and in SUB_UpdateBeneficiaryFields.
+  -- Added in Slice 4: the transfer page picks a payee from a ComboBox,
+  -- and Mendix ComboBox captions must be String attributes.
+  $New = CREATE Banking.Beneficiary (
+    TargetAccountNumber = $Target/AccountNumber,
+    PayeeLabel = toString($Target/AccountNumber) + ' — ' + $Form/Nickname,
+    Nickname = $Form/Nickname,
+    TransferLimit = $Form/TransferLimit,
+    Banking.Beneficiary_OwnerAccount = $Owner,
+    Banking.Beneficiary_TargetAccount = $Target
+  ) COMMIT;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Apply nickname and limit changes to an existing payee, after confirming
+ * it belongs to the caller.
+ *
+ * The target account is deliberately not editable: re-pointing an existing
+ * payee at a different account is how an approved transfer limit gets
+ * reused against an account that was never validated.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_UpdateBeneficiaryFields (
+  $Form: Banking.BeneficiaryForm,
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Boolean AS $Updated
+FOLDER 'Actions'
+BEGIN
+  $Confirmed = CALL MICROFLOW Banking.SUB_ConfirmBeneficiaryIsMine (
+    Beneficiary = $Beneficiary
+  );
+
+  IF $Confirmed = empty THEN
+    RETURN false;
+  END IF;
+
+  CHANGE $Confirmed (
+    Nickname = $Form/Nickname,
+    PayeeLabel = toString($Confirmed/TargetAccountNumber) + ' — ' + $Form/Nickname,
+    TransferLimit = $Form/TransferLimit
+  ) COMMIT;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Delete a payee, but only from the caller's own list.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_DeleteBeneficiary (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Boolean AS $Deleted
+FOLDER 'Actions'
+BEGIN
+  $Confirmed = CALL MICROFLOW Banking.SUB_ConfirmBeneficiaryIsMine (
+    Beneficiary = $Beneficiary
+  );
+
+  IF $Confirmed = empty THEN
+    RETURN false;
+  END IF;
+
+  DELETE $Confirmed;
+
+  RETURN true;
+END;
+/
+
+/**
+ * The beneficiary the form is editing, or empty when it is an add.
+ *
+ * Trivial, but it keeps the retrieve out of the ACT_ microflow
+ * (lint CONV010).
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_GetFormBeneficiary (
+  $Form: Banking.BeneficiaryForm
+)
+RETURNS Banking.Beneficiary AS $Beneficiary
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Beneficiary FROM $Form/Banking.BeneficiaryForm_Beneficiary;
+  RETURN $Beneficiary;
+END;
+/
+
+/**
+ * Save the payee form — add when it carries no beneficiary, edit when it
+ * does.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SaveBeneficiary (
+  $Form: Banking.BeneficiaryForm
+)
+RETURNS Boolean AS $Saved
+FOLDER 'Actions'
+BEGIN
+  $Existing = CALL MICROFLOW Banking.SUB_GetFormBeneficiary (Form = $Form);
+
+  IF $Existing != empty THEN
+    $LimitOk = CALL MICROFLOW Banking.VAL_TransferLimit (Form = $Form);
+
+    IF $LimitOk = false THEN
+      RETURN false;
+    END IF;
+
+    $Updated = CALL MICROFLOW Banking.SUB_UpdateBeneficiaryFields (
+      Form = $Form,
+      Beneficiary = $Existing
+    );
+
+    IF $Updated = false THEN
+      SHOW MESSAGE 'That payee is not registered against one of your accounts.' TYPE Error;
+      RETURN false;
+    END IF;
+
+    CLOSE PAGE;
+    RETURN true;
+  END IF;
+
+  $Target = CALL MICROFLOW Banking.VAL_BeneficiaryForm (Form = $Form);
+
+  IF $Target = empty THEN
+    RETURN false;
+  END IF;
+
+  $Created = CALL MICROFLOW Banking.SUB_CreateBeneficiary (
+    Form = $Form,
+    Target = $Target
+  );
+
+  CLOSE PAGE;
+  RETURN true;
+END;
+/
+
+/**
+ * Remove a payee.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_RemoveBeneficiary (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Boolean AS $Removed
+FOLDER 'Actions'
+BEGIN
+  $Deleted = CALL MICROFLOW Banking.SUB_DeleteBeneficiary (
+    Beneficiary = $Beneficiary
+  );
+
+  IF $Deleted = false THEN
+    SHOW MESSAGE 'That payee is not registered against one of your accounts.' TYPE Error;
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyBeneficiaries TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SaveBeneficiary TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_RemoveBeneficiary TO Banking.AccountHolder;
+/

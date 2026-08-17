@@ -1,0 +1,123 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2: statement pages
+--
+-- Statement_Overview replaces afterenquery.jsp (date-range statement) and
+-- MiniStatement_Overview replaces ministat.jsp.
+--
+-- Both show BalanceAfter, which the legacy pages could not: widep carried
+-- only the amount, and the running balance existed nowhere.
+-- =====================================================================
+
+/**
+ * Account statement over a date range.
+ *
+ * The DataView holds a non-persistent StatementFilter created by
+ * DS_NewStatementFilter (first account, last 30 days). The grid's
+ * datasource microflow takes that object as its parameter, and the "Show
+ * statement" button refreshes that object in the client, which is what
+ * makes the datasource re-run.
+ */
+CREATE OR REPLACE PAGE Banking.Statement_Overview
+  (
+    Title: 'Account statement',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'statement',
+    Folder: 'Statements'
+  )
+  {
+    -- The DataView carries input widgets, so it has to sit inside a layout
+    -- grid or label and input widths render wrong (MPR010).
+    LAYOUTGRID lgPage {
+      ROW rowPage {
+        COLUMN colPage (DesktopWidth: 12) {
+    DATAVIEW dvFilter (DataSource: MICROFLOW Banking.DS_NewStatementFilter) {
+
+      -- An explicit "Show" button rather than live-updating inputs.
+      -- The date pickers do support `OnChange`, but the ComboBox exposes
+      -- no change-event property in MDL at all (onChangeEvent,
+      -- onChangeDatabaseEvent and OnChangeAction are all MDL-WIDGET01
+      -- "has no property"), so wiring only the dates would mean the
+      -- account picker silently did nothing. One button for all three
+      -- inputs is predictable, and it mirrors the legacy enqueries.jsp
+      -- form submit.
+      LAYOUTGRID lgFilter {
+        ROW rowFilter {
+          COLUMN colAccount (DesktopWidth: 3) {
+            COMBOBOX cbAccount (
+              Label: 'Account',
+              Association: StatementFilter_Account,
+              DataSource: DATABASE Banking.Account,
+              CaptionAttribute: AccountLabel
+            )
+          }
+          COLUMN colFrom (DesktopWidth: 3) {
+            DATEPICKER dpFrom (Label: 'From', Attribute: FromDate)
+          }
+          COLUMN colTo (DesktopWidth: 3) {
+            DATEPICKER dpTo (Label: 'To', Attribute: ToDate)
+          }
+          COLUMN colShow (DesktopWidth: 3) {
+            ACTIONBUTTON btnShow (
+              Caption: 'Show statement',
+              Action: MICROFLOW Banking.ACT_RefreshStatement(Filter: $currentObject),
+              ButtonStyle: Primary
+            )
+          }
+        }
+      }
+
+      DATAGRID dgStatement (DataSource: MICROFLOW Banking.DS_StatementLines) {
+        COLUMN colDate (Attribute: BookedOn, Caption: 'Date')
+        COLUMN colType (Attribute: TransactionType, Caption: 'Type')
+        COLUMN colAmount (Attribute: Amount, Caption: 'Amount')
+        COLUMN colBalance (Attribute: BalanceAfter, Caption: 'Balance after')
+        COLUMN colDescription (Attribute: Description, Caption: 'Description')
+        COLUMN colReference (Attribute: Reference, Caption: 'Reference')
+      }
+    }
+        }
+      }
+    }
+  };
+/
+
+/**
+ * Mini statement: the five most recent lines across all the customer's
+ * accounts, with no input.
+ */
+CREATE OR REPLACE PAGE Banking.MiniStatement_Overview
+  (
+    Title: 'Mini statement',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'mini-statement',
+    Folder: 'Statements'
+  )
+  {
+    LAYOUTGRID lgMini {
+      ROW rowMiniHeading {
+        COLUMN colMiniHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtMiniHeading (
+            Content: 'Your last five transactions',
+            RenderMode: H2
+          )
+        }
+      }
+      ROW rowMiniGrid {
+        COLUMN colMiniGrid (DesktopWidth: 12) {
+          DATAGRID dgMini (DataSource: MICROFLOW Banking.DS_MiniStatement) {
+            COLUMN colMiniDate (Attribute: BookedOn, Caption: 'Date')
+            COLUMN colMiniType (Attribute: TransactionType, Caption: 'Type')
+            COLUMN colMiniAmount (Attribute: Amount, Caption: 'Amount')
+            COLUMN colMiniBalance (Attribute: BalanceAfter, Caption: 'Balance after')
+            COLUMN colMiniDescription (Attribute: Description, Caption: 'Description')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Statement_Overview TO Banking.AccountHolder;
+/
+GRANT VIEW ON PAGE Banking.MiniStatement_Overview TO Banking.AccountHolder;
+/

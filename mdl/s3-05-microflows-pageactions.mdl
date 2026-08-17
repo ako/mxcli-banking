@@ -1,0 +1,94 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3: microflows that open the payee form
+--
+-- Split from s3-03 because they SHOW a page, and mxcli resolves no
+-- forward references: the page in s3-04 has to exist before these can be
+-- created, and these have to exist before the overview in s3-06 can bind
+-- its buttons to them.
+--
+-- Same layering as s3-03: the ACT_ microflows only build-and-show, with
+-- the retrieving and creating in SUB_ microflows (lint CONV010).
+-- =====================================================================
+
+/**
+ * A blank add-a-payee form, defaulted to the customer's first account.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildNewBeneficiaryForm ()
+RETURNS Banking.BeneficiaryForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY AccountNumber ASC;
+  $FirstAccount = HEAD($Accounts);
+
+  $Form = CREATE Banking.BeneficiaryForm (
+    Banking.BeneficiaryForm_OwnerAccount = $FirstAccount
+  );
+
+  RETURN $Form;
+END;
+/
+
+/**
+ * An edit form, pre-filled from an existing payee.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_BuildEditBeneficiaryForm (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Banking.BeneficiaryForm AS $Form
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Owner FROM $Beneficiary/Banking.Beneficiary_OwnerAccount;
+  RETRIEVE $Target FROM $Beneficiary/Banking.Beneficiary_TargetAccount;
+
+  $Form = CREATE Banking.BeneficiaryForm (
+    TargetAccountNumber = $Target/AccountNumber,
+    Nickname = $Beneficiary/Nickname,
+    TransferLimit = $Beneficiary/TransferLimit,
+    Banking.BeneficiaryForm_OwnerAccount = $Owner,
+    Banking.BeneficiaryForm_Beneficiary = $Beneficiary
+  );
+
+  RETURN $Form;
+END;
+/
+
+/**
+ * Open a blank add-a-payee form.
+ *
+ * The overview's "Add payee" button calls this rather than opening the
+ * page directly: the page takes a BeneficiaryForm parameter, so somebody
+ * has to build one.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_NewBeneficiary ()
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildNewBeneficiaryForm();
+  SHOW PAGE Banking.Beneficiary_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+/**
+ * Open the edit form for an existing payee, pre-filled.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_EditBeneficiary (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Boolean AS $Opened
+FOLDER 'Actions'
+BEGIN
+  $Form = CALL MICROFLOW Banking.SUB_BuildEditBeneficiaryForm (
+    Beneficiary = $Beneficiary
+  );
+  SHOW PAGE Banking.Beneficiary_NewEdit ($Form = $Form);
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.ACT_NewBeneficiary TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_EditBeneficiary TO Banking.AccountHolder;
+/

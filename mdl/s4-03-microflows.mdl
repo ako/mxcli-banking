@@ -1,0 +1,329 @@
+-- =====================================================================
+-- RRNetBanking — Slice 4: transfer microflows
+--
+-- THE ATOMICITY FIX. A Mendix microflow runs inside a single database
+-- transaction: if any activity throws, everything the microflow did is
+-- rolled back. So the debit, the credit and both ledger lines either all
+-- happen or none of them do, which is precisely what
+-- PDAOU.transfer() could not promise — it ran four separate statements
+-- with `catch(Exception e){System.out.println(e);}` around them, so a
+-- failure part-way through silently destroyed or created money.
+--
+-- Nothing here uses "Continue" error handling, which would defeat that by
+-- swallowing the error and letting the flow carry on (lint CONV014).
+--
+-- THE VALIDATION FIX. Legacy TRANSFERMONEY1.jsp checked the limit and the
+-- balance in JavaScript:
+--
+--   if (parseFloat(x)>parseFloat(y)) { alert("AMOUNT EXCEEDING LIMITS"); ... }
+--   if (parseFloat(x)>parseFloat(z)) { alert("AMOUNT EXCEEDING ACCOUNT BALANCE"); ... }
+--
+-- and the servlet's transfer() then checked nothing at all — it read the
+-- amount straight off the request and applied it. Both checks are
+-- server-side here, and the payer account is derived from the payee
+-- rather than posted, so there is no from-account to tamper with.
+--
+-- ORDER: callee-first, as everywhere (mxcli resolves no forward
+-- references). LAYERING: ACT_ is thin, work happens in SUB_/VAL_.
+-- =====================================================================
+
+/**
+ * A blank transfer form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_NewTransferForm ()
+RETURNS Banking.TransferForm AS $Form
+FOLDER 'Datasources'
+BEGIN
+  $Form = CREATE Banking.TransferForm ();
+  RETURN $Form;
+END;
+/
+
+/**
+ * The customer's own transfers, newest first.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyTransfers ()
+RETURNS LIST OF Banking.Transfer AS $Transfers
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Transfers FROM Banking.Transfer
+    WHERE '[Banking.Transfer_FromAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY ExecutedOn DESC;
+  RETURN $Transfers;
+END;
+/
+
+/**
+ * Re-read the selected payee under an ownership-constrained retrieve.
+ *
+ * Same guard as on beneficiary edit and removal: the form's reference is
+ * client-side state, so it is re-resolved server-side rather than
+ * trusted. A payee belonging to someone else resolves to empty and the
+ * transfer never starts.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ConfirmTransferPayee (
+  $Beneficiary: Banking.Beneficiary
+)
+RETURNS Banking.Beneficiary AS $Confirmed
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Confirmed FROM Banking.Beneficiary
+    WHERE '[id = $Beneficiary
+            and Banking.Beneficiary_OwnerAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    LIMIT 1;
+  RETURN $Confirmed;
+END;
+/
+
+/**
+ * Check the amount against the payee's transfer limit and the payer's
+ * available balance, server-side.
+ *
+ * Returns true when the transfer is REJECTED, having shown the reason.
+ * The messages keep the legacy meanings ("AMOUNT EXCEEDING LIMITS",
+ * "AMOUNT EXCEEDING ACCOUNT BALANCE") in readable form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_TransferAmount (
+  $Form: Banking.TransferForm,
+  $Beneficiary: Banking.Beneficiary,
+  $FromAccount: Banking.Account
+)
+RETURNS Boolean AS $Rejected
+FOLDER 'Validation'
+BEGIN
+  IF $FromAccount/Status != Banking.ENUM_AccountStatus.Active THEN
+    SHOW MESSAGE 'That account is not active, so money cannot be transferred from it.' TYPE Error;
+    RETURN true;
+  END IF;
+
+  IF $Form/Amount > $Beneficiary/TransferLimit THEN
+    VALIDATION FEEDBACK $Form/Amount
+      MESSAGE 'That is more than the transfer limit set for this payee.';
+    RETURN true;
+  END IF;
+
+  IF $Form/Amount > $FromAccount/Balance THEN
+    VALIDATION FEEDBACK $Form/Amount
+      MESSAGE 'That is more than the balance available on the account.';
+    RETURN true;
+  END IF;
+
+  RETURN false;
+END;
+/
+
+/**
+ * Validate the whole form and return the payee to transfer to, or empty
+ * when the transfer must not proceed.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_TransferForm (
+  $Form: Banking.TransferForm
+)
+RETURNS Banking.Beneficiary AS $Payee
+FOLDER 'Validation'
+BEGIN
+  RETRIEVE $Selected FROM $Form/Banking.TransferForm_Beneficiary;
+
+  IF $Selected = empty THEN
+    SHOW MESSAGE 'Choose a payee to transfer to.' TYPE Warning;
+    RETURN empty;
+  END IF;
+
+  IF $Form/Amount = empty THEN
+    VALIDATION FEEDBACK $Form/Amount MESSAGE 'Enter an amount.';
+    RETURN empty;
+  ELSIF $Form/Amount <= 0 THEN
+    VALIDATION FEEDBACK $Form/Amount MESSAGE 'The amount must be greater than 0.';
+    RETURN empty;
+  END IF;
+
+  $Payee = CALL MICROFLOW Banking.SUB_ConfirmTransferPayee (
+    Beneficiary = $Selected
+  );
+
+  IF $Payee = empty THEN
+    SHOW MESSAGE 'That payee is not registered against one of your accounts.' TYPE Error;
+    RETURN empty;
+  END IF;
+
+  RETRIEVE $FromAccount FROM $Payee/Banking.Beneficiary_OwnerAccount;
+
+  $Rejected = CALL MICROFLOW Banking.VAL_TransferAmount (
+    Form = $Form,
+    Beneficiary = $Payee,
+    FromAccount = $FromAccount
+  );
+
+  IF $Rejected = true THEN
+    RETURN empty;
+  END IF;
+
+  RETURN $Payee;
+END;
+/
+
+/**
+ * Write the two ledger lines for a transfer.
+ *
+ * Split out so SUB_ExecuteTransfer stays readable; both run inside the
+ * caller's transaction, so this is not a separate unit of work.
+ * BalanceAfter is passed in already computed — a ledger line records the
+ * balance as at that line, which is the thing the legacy widep table
+ * could never express.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_WriteTransferLedger (
+  $Transfer: Banking.Transfer,
+  $FromAccount: Banking.Account,
+  $ToAccount: Banking.Account,
+  $Amount: Decimal,
+  $FromBalanceAfter: Decimal,
+  $ToBalanceAfter: Decimal
+)
+RETURNS Boolean AS $Written
+FOLDER 'Actions'
+BEGIN
+  $Lines = CREATE LIST OF Banking.Transaction;
+
+  $Debit = CREATE Banking.Transaction (
+    BookedOn = [%CurrentDateTime%],
+    TransactionType = Banking.ENUM_TransactionType.Debit,
+    Amount = $Amount,
+    BalanceAfter = $FromBalanceAfter,
+    Description = 'Transfer to ' + $Transfer/PayeeLabel,
+    Banking.Transaction_Account = $FromAccount,
+    Banking.Transaction_Transfer = $Transfer
+  );
+  ADD $Debit TO $Lines;
+
+  $Credit = CREATE Banking.Transaction (
+    BookedOn = [%CurrentDateTime%],
+    TransactionType = Banking.ENUM_TransactionType.Credit,
+    Amount = $Amount,
+    BalanceAfter = $ToBalanceAfter,
+    Description = 'Transfer received',
+    Banking.Transaction_Account = $ToAccount,
+    Banking.Transaction_Transfer = $Transfer
+  );
+  ADD $Credit TO $Lines;
+
+  COMMIT $Lines;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Move the money.
+ *
+ * Everything below happens in one transaction. If any step throws, the
+ * debit is rolled back with the rest — which is the whole difference from
+ * the legacy four-statement sequence.
+ *
+ * KNOWN LIMITATION: this reads the balance, checks it, then writes the
+ * new one. Two transfers from the same account running at the same moment
+ * could both pass the check and overdraw it. Mendix offers no row lock in
+ * a microflow, so closing that needs either an optimistic-concurrency
+ * retry or serialisation through a queue. Recorded in FINDINGS.md; not
+ * addressed in this slice.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ExecuteTransfer (
+  $Form: Banking.TransferForm,
+  $Payee: Banking.Beneficiary
+)
+RETURNS Banking.Transfer AS $Transfer
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $FromAccount FROM $Payee/Banking.Beneficiary_OwnerAccount;
+  RETRIEVE $ToAccount FROM $Payee/Banking.Beneficiary_TargetAccount;
+
+  DECLARE $Amount Decimal = $Form/Amount;
+  DECLARE $FromBalanceAfter Decimal = $FromAccount/Balance - $Amount;
+  DECLARE $ToBalanceAfter Decimal = $ToAccount/Balance + $Amount;
+
+  $Transfer = CREATE Banking.Transfer (
+    Amount = $Amount,
+    ExecutedOn = [%CurrentDateTime%],
+    TargetAccountNumber = $Payee/TargetAccountNumber,
+    PayeeLabel = $Payee/PayeeLabel,
+    Remarks = $Form/Remarks,
+    Banking.Transfer_FromAccount = $FromAccount,
+    Banking.Transfer_Beneficiary = $Payee
+  ) COMMIT;
+
+  CHANGE $FromAccount (Balance = $FromBalanceAfter) COMMIT;
+  CHANGE $ToAccount (Balance = $ToBalanceAfter) COMMIT;
+
+  $Written = CALL MICROFLOW Banking.SUB_WriteTransferLedger (
+    Transfer = $Transfer,
+    FromAccount = $FromAccount,
+    ToAccount = $ToAccount,
+    Amount = $Amount,
+    FromBalanceAfter = $FromBalanceAfter,
+    ToBalanceAfter = $ToBalanceAfter
+  );
+
+  RETURN $Transfer;
+END;
+/
+
+/**
+ * Reset the form after a completed transfer, so the page is ready for
+ * the next one and cannot resubmit the last.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ResetTransferForm (
+  $Form: Banking.TransferForm
+)
+RETURNS Boolean AS $Reset
+FOLDER 'Actions'
+BEGIN
+  CHANGE $Form (
+    Amount = empty,
+    Remarks = empty
+  ) REFRESH;
+  RETURN true;
+END;
+/
+
+/**
+ * Submit the transfer form.
+ *
+ * A blocking confirmation is deliberate here: money moved, and the
+ * customer should have to acknowledge the reference. Everywhere else in
+ * this app a success is confirmed by the refreshed list instead.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SubmitTransfer (
+  $Form: Banking.TransferForm
+)
+RETURNS Boolean AS $Done
+FOLDER 'Actions'
+BEGIN
+  $Payee = CALL MICROFLOW Banking.VAL_TransferForm (Form = $Form);
+
+  IF $Payee = empty THEN
+    RETURN false;
+  END IF;
+
+  $Transfer = CALL MICROFLOW Banking.SUB_ExecuteTransfer (
+    Form = $Form,
+    Payee = $Payee
+  );
+
+  $Reset = CALL MICROFLOW Banking.SUB_ResetTransferForm (Form = $Form);
+
+  -- TYPE comes BEFORE OBJECTS. The other order is a parse error, and a
+  -- confusing one: 'Type' is a reserved word, so it is reported as a
+  -- naming problem rather than as a clause-order problem.
+  SHOW MESSAGE 'Transfer completed. Reference {1}.'
+    TYPE Information
+    OBJECTS [toString($Transfer/Reference)];
+
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_NewTransferForm TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyTransfers TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SubmitTransfer TO Banking.AccountHolder;
+/

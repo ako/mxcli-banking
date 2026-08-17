@@ -1,0 +1,20 @@
+-- =====================================================================
+-- RRNetBanking — Slice 7: navigation
+--
+-- The legacy menu called this "REGISTRATION NEW ACCOUNT" and put it last.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Administration.Account_Overview FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+    MENU ITEM 'Account statement' PAGE Banking.Statement_Overview;
+    MENU ITEM 'Mini statement' PAGE Banking.MiniStatement_Overview;
+    MENU ITEM 'Transfer money' PAGE Banking.Transfer_NewEdit;
+    MENU ITEM 'Bill payment' PAGE Banking.BillPayment_NewEdit;
+    MENU ITEM 'Beneficiaries' PAGE Banking.Beneficiary_Overview;
+    MENU ITEM 'Profile' PAGE Banking.Profile_NewEdit;
+    MENU ITEM 'Open an account' PAGE Banking.OpenAccount_NewEdit;
+  );
+/

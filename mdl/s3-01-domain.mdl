@@ -1,0 +1,107 @@
+-- =====================================================================
+-- RRNetBanking — Slice 3 (Beneficiaries): domain model
+--
+-- Replaces the legacy bene(cac, tacc, camt) table: owner account, target
+-- account number, per-transfer limit.
+--
+-- The important change is that the target is a real ASSOCIATION rather
+-- than a loose account number. In the legacy schema `tacc` was an integer
+-- with no foreign key, which is what allowed removebene.jsp to run
+--
+--   delete from bene where tacc = <number>
+--
+-- with no `cac` clause — removing that payee for EVERY customer in the
+-- bank, not just the one asking. Modelling both ends as associations, and
+-- routing every mutation through a microflow that checks the owner, makes
+-- that defect unrepresentable rather than merely fixed.
+-- =====================================================================
+
+/**
+ * A payee registered against one of the customer's accounts, with the
+ * maximum that may be transferred to it in a single transfer.
+ *
+ * Legacy: bene(cac, tacc, camt).
+ */
+-- TargetAccountNumber is stored on the beneficiary, not read through the
+-- Beneficiary_TargetAccount association, even though the association is
+-- what the model is really built on.
+--
+-- Row-level security is why. Banking.Account is readable only when it is
+-- YOUR account, so a customer cannot read the payee's Account row at all —
+-- the association resolves, but every attribute on the far side renders
+-- blank. Copying the number onto the row the customer does own is what
+-- makes the payee identifiable to them.
+--
+-- It also matches the legacy bene.tacc, and it is the more honest record:
+-- it is the number the customer registered, frozen at that moment.
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Beneficiary (
+  Reference: AutoNumber DEFAULT 700000001,
+  TargetAccountNumber: Long,
+  Nickname: String(100),
+  TransferLimit: Decimal NOT NULL
+)
+COMMENT 'A registered payee and its per-transfer limit. Legacy: the bene table.';
+/
+
+/**
+ * The account the beneficiary is registered against — the payer.
+ * Legacy: bene.cac.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Beneficiary_OwnerAccount
+  FROM Banking.Beneficiary TO Banking.Account
+  TYPE Reference
+  DELETE_BEHAVIOR CASCADE
+  COMMENT 'Payer account. Closing an account takes its payee list with it.';
+/
+
+/**
+ * The account being paid. Legacy: bene.tacc, a bare integer.
+ * PREVENT, because deleting an account that others pay into would silently
+ * orphan their payee lists.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.Beneficiary_TargetAccount
+  FROM Banking.Beneficiary TO Banking.Account
+  TYPE Reference
+  DELETE_BEHAVIOR PREVENT
+  COMMENT 'Payee account. Referenced, not copied as a number.';
+/
+
+/**
+ * Form state for adding or editing a beneficiary.
+ *
+ * Non-persistent on purpose. Every mutation of Banking.Beneficiary goes
+ * through a microflow (lint CONV006: no CREATE/DELETE in access rules), so
+ * the customer never holds a half-built persistent object, and an
+ * abandoned form leaves nothing behind. The legacy page posted the target
+ * account number and the limit as raw request parameters and concatenated
+ * them into SQL.
+ *
+ * TargetAccountNumber is entered as a number, exactly as the legacy
+ * beneficiery.jsp form did; the microflow resolves it to a real account
+ * and rejects it if there is none.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.BeneficiaryForm (
+  TargetAccountNumber: Long,
+  Nickname: String(100),
+  TransferLimit: Decimal
+)
+COMMENT 'Form state for the add/edit beneficiary page. Not stored.';
+/
+
+/**
+ * Which of the customer's accounts the payee is being registered against.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.BeneficiaryForm_OwnerAccount
+  FROM Banking.BeneficiaryForm TO Banking.Account
+  TYPE Reference
+  COMMENT 'Payer account selected on the form.';
+/
+
+/**
+ * Set when editing an existing beneficiary, empty when adding a new one.
+ */
+CREATE OR MODIFY ASSOCIATION Banking.BeneficiaryForm_Beneficiary
+  FROM Banking.BeneficiaryForm TO Banking.Beneficiary
+  TYPE Reference
+  COMMENT 'The beneficiary being edited; empty when adding.';
+/

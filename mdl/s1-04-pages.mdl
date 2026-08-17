@@ -1,0 +1,107 @@
+-- =====================================================================
+-- RRNetBanking — Slice 1: the customer home dashboard
+--
+-- Replaces the legacy afterlogin.jsp, which showed the account number and
+-- branch code by pulling index 0 out of an ArrayList of denormalised rows
+-- held in the HTTP session. Here the data comes from datasource microflows
+-- that the entity access rules constrain to the logged-in customer.
+--
+-- The anti-phishing notice is carried over verbatim from afterlogin.jsp.
+-- =====================================================================
+
+/**
+ * The customer landing page, reached straight after login.
+ *
+ * Shows who is logged in, the anti-phishing notice carried over from the
+ * legacy afterlogin.jsp, and one row per account the customer holds with
+ * its number, branch, balance and status.
+ *
+ * Both datasources are constrained by the AccountHolder entity access
+ * rules, so a customer cannot see another customer's accounts even though
+ * DS_MyAccounts retrieves without an explicit owner filter.
+ */
+CREATE OR REPLACE PAGE Banking.Home_Dashboard
+  (
+    Title: 'Internet Banking',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'home',
+    Folder: 'Home'
+  )
+  {
+    LAYOUTGRID lgDashboard {
+
+      ROW rowWelcome {
+        COLUMN colWelcome (DesktopWidth: 12) {
+          DATAVIEW dvCustomer (DataSource: MICROFLOW Banking.DS_CurrentCustomer) {
+            -- RenderMode H2 makes this block-level; two adjacent plain
+            -- dynamictexts are both <span> and would run together
+            -- (MDL-WIDGET15).
+            DYNAMICTEXT dtWelcome (
+              Content: 'Welcome, {1}',
+              ContentParams: [{1} = FullName],
+              RenderMode: H2
+            )
+            DYNAMICTEXT dtContact (
+              Content: 'Registered mobile: {1}',
+              ContentParams: [{1} = MobileNumber]
+            )
+          }
+        }
+      }
+
+      ROW rowSecurityNotice {
+        COLUMN colSecurityNotice (DesktopWidth: 12) {
+          CONTAINER cntSecurityNotice (Class: 'alert alert-warning') {
+            DYNAMICTEXT dtSecurityNotice (
+              Content: 'RR or any of its representatives never sends you email/SMS or calls you over phone to get your personal information, password or one time SMS (high security) password. Any such e-mail/SMS or phone call is an attempt to fraudulently withdraw money from your account through Internet Banking. Never respond to such email/SMS or phone call. Change your passwords immediately if you have accidentally revealed your credentials.'
+            )
+          }
+        }
+      }
+
+      ROW rowAccounts {
+        COLUMN colAccounts (DesktopWidth: 12) {
+          CONTAINER cntAccountsHeading {
+            DYNAMICTEXT dtAccountsHeading (Content: 'Your accounts')
+          }
+          LISTVIEW lvAccounts (DataSource: MICROFLOW Banking.DS_MyAccounts) {
+            LAYOUTGRID lgAccount {
+              ROW rowAccount {
+                COLUMN colAccountNumber (DesktopWidth: 3) {
+                  DYNAMICTEXT dtAccountNumber (
+                    Content: 'A/C no: {1}',
+                    ContentParams: [{1} = AccountNumber]
+                  )
+                }
+                COLUMN colAccountBranch (DesktopWidth: 3) {
+                  DATAVIEW dvBranch (DataSource: $currentObject/Banking.Account_Branch) {
+                    DYNAMICTEXT dtBranch (
+                      Content: 'Branch: {1} ({2})',
+                      ContentParams: [{1} = BranchName, {2} = Code]
+                    )
+                  }
+                }
+                COLUMN colAccountBalance (DesktopWidth: 3) {
+                  DYNAMICTEXT dtBalance (
+                    Content: 'Balance: {1}',
+                    ContentParams: [{1} = Balance]
+                  )
+                }
+                COLUMN colAccountStatus (DesktopWidth: 3) {
+                  DYNAMICTEXT dtStatus (
+                    Content: 'Status: {1}',
+                    ContentParams: [{1} = Status]
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
+
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Home_Dashboard TO Banking.AccountHolder;
+/

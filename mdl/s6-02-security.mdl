@@ -1,0 +1,30 @@
+-- =====================================================================
+-- RRNetBanking — Slice 6: security
+--
+-- Note the asymmetry, and that it is not an oversight.
+--
+-- Banking.AccountSummary has NO access rules, and cannot have any:
+-- `GRANT ... ON Banking.AccountSummary` fails with "entity not found",
+-- because mxcli does not track view entities as entities once created.
+-- See the note in s6-01. That is why the dashboard reads
+-- Banking.DashboardCard instead.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.Notification (READ *)
+  WHERE '[Banking.Notification_Customer = ''[%CurrentUser%]'']';
+/
+GRANT Banking.Administrator ON Banking.Notification (READ *);
+/
+
+GRANT Banking.AccountHolder ON Banking.ProfileForm (READ *, WRITE *);
+/
+GRANT Banking.AccountHolder ON Banking.PasswordForm (READ *, WRITE *);
+/
+GRANT Banking.AccountHolder ON Banking.DashboardCard (READ *);
+/
+
+-- The profile page writes these three through a microflow, but the page
+-- also has to read them off the Customer to prefill the form.
+GRANT Banking.AccountHolder ON Banking.Customer (READ *)
+  WHERE '[id = ''[%CurrentUser%]'']';
+/
