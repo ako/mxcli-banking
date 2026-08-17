@@ -1,0 +1,27 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2: security for the ledger
+--
+-- A customer may read a ledger line only when it hangs off an account
+-- that is theirs. The constraint traverses two associations:
+--
+--   Transaction -> Account -> Customer  ==  current user
+--
+-- Nobody gets WRITE or DELETE on Banking.Transaction — not even an
+-- administrator. A ledger is append-only, and the only writers are the
+-- microflows that move money (Slices 4 and 5) plus demo seeding. This is
+-- the structural version of a rule the legacy system had no way to state:
+-- there, any JSP could UPDATE widep.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.Transaction (READ *)
+  WHERE '[Banking.Transaction_Account/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']';
+/
+
+GRANT Banking.Administrator ON Banking.Transaction (READ *);
+/
+
+-- The statement filter is non-persistent form state, so there are no rows
+-- to constrain — but it still needs an access rule or the page cannot
+-- bind to it.
+GRANT Banking.AccountHolder ON Banking.StatementFilter (READ *, WRITE *);
+/

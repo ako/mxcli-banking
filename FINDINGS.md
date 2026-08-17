@@ -255,10 +255,146 @@ work, which is exactly the defect the legacy JSP system could not fix.
 Distinct AutoNumbers were confirmed too (`100000001`, `100000002`), so the
 legacy `update acc set cac=cac+1` race is gone.
 
-### Cosmetic: the ListView renders an empty band above the first row
+### ~~Cosmetic: the ListView renders an empty band above the first row~~
 
-Visible in `tests/screenshots/s1-dashboard-priya.png`. Harmless, not yet
-investigated — likely a ledger-theme ListView toolbar area. Polish item.
+**Not cosmetic — this was the bug.** Written off here as a theme artefact and
+left uninvestigated. Slice 2 identified it: the empty band was the *other*
+customer's account row, retrieved by an unconstrained microflow and blanked by
+the entity access rule. See the Slice 2 finding on "Apply entity access".
+
+The lesson is the finding: an unexplained empty row in a data widget is a
+security smell, not a styling one.
+
+---
+
+## 2026-08-17 — Slice 2 (ledger and statements)
+
+### ⚠ Microflow retrieves do NOT apply entity access, and MDL cannot turn it on
+
+**The most important finding so far, and it corrects a Slice 1 claim.**
+
+A Mendix microflow retrieve ignores entity access rules unless the
+microflow's *"Apply entity access"* property is set. MDL has no syntax for that
+property — `APPLY ENTITY ACCESS`, `APPLYENTITYACCESS` and `WITH ENTITY ACCESS`
+are all parse errors, and it appears in neither `mxcli syntax microflow.create`
+nor `microflow.retrieve`.
+
+So a datasource microflow that retrieves without an explicit ownership clause
+returns **every** customer's rows. The access rule still applies at *render*
+time, blanking attributes the user may not read — so the page looks correct
+while the datasource has actually loaded other people's objects.
+
+Measured on the mini statement, logged in as `rahul`, who owns three ledger
+lines:
+
+```
+Currently showing 1 to 5 of 5     <- LIMIT 5 applied across ALL 6 rows in the table
+ROWS: [ header,
+        "",                        <- priya's, blanked by the access rule
+        "8/14/2026 Debit 2000 25000 Transfer to beneficiary",
+        "",                        <- priya's
+        "8/3/2026 Debit 3000 27000 Bill payment - Reliance Comm.",
+        "" ]                       <- priya's
+```
+
+Note the second-order damage: `LIMIT 5` was applied *before* the access filter,
+so rahul lost one of his own three lines to make room for rows he cannot read.
+Bounded queries are silently wrong, not just leaky.
+
+**This means the Slice 1 conclusion "row-level security confirmed end to end"
+was too strong.** The *rendered* isolation was real, and no attribute value
+leaked, but `DS_MyAccounts` was retrieving both customers' accounts and relying
+on rendering to hide one. The test passed because it only asserted that the
+other account number was absent from the DOM — and a blanked row contains no
+number either.
+
+Fixed by stating the ownership constraint in every datasource retrieve:
+
+```mdl
+RETRIEVE $Lines FROM Banking.Transaction
+  WHERE '[Banking.Transaction_Account/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+  SORT BY BookedOn DESC
+  LIMIT 5;
+```
+
+The access rules stay — they are the backstop, and they are what makes a
+tampered reference return nothing. The query constraint is the second lock.
+
+**Test rule that comes out of this:** assert row *counts*, and count rendered-
+with-content against total. "The other customer's ID is not in the DOM" cannot
+distinguish "not retrieved" from "retrieved and blanked". Both test files now
+do this.
+
+### A datasource microflow does not re-run when an input writes to its parameter
+
+Editing an attribute through an input widget marks the object changed but does
+not refresh it, so a grid whose datasource microflow takes that object keeps
+its original result. Verified: setting "To" to `1/1/2020` left all three lines
+on screen.
+
+The fix is an explicit *refresh in client* — `CHANGE $Filter (...) REFRESH;` —
+triggered by a "Show statement" button. Row count then moved 3 → 1 as expected.
+
+### ComboBox exposes no change-event property in MDL
+
+`OnChange` works on `DATEPICKER`, but on `COMBOBOX` every spelling is
+MDL-WIDGET01 *"has no property"* — `OnChange`, `onChangeEvent`,
+`onChangeDatabaseEvent`, `OnChangeAction` — even though the generated widget
+doc at `.ai-context/skills/widgets/combobox.md` lists `onChangeEvent` and
+`onChangeDatabaseEvent` as real properties. Wiring only the date pickers would
+have left the account picker silently doing nothing, so the page uses one
+explicit button for all three inputs instead.
+
+### ComboBox captions must be String attributes
+
+`CE7247 "Only attributes of type String are allowed here."` — an AutoNumber
+cannot be a `CaptionAttribute`. An expression caption would avoid a denormalised
+attribute, but MDL exposes only `optionsSourceAssociationCaptionExpression`, not
+the database-options-source equivalent the widget actually needs. Hence
+`Banking.Account.AccountLabel`, filled by a microflow after commit (AutoNumber
+has no value until then).
+
+### `mxcli syntax` documents NON_PERSISTENT with an underscore; the parser wants a hyphen
+
+`CREATE NON_PERSISTENT ENTITY` is a parse error. `CREATE NON-PERSISTENT ENTITY`
+works. `mxcli syntax domain-model.entity.create` shows the underscore form;
+`.ai-context/skills/mdl-entities.md` shows the hyphen.
+
+### `DECLARE` must carry a value
+
+`DECLARE $From DateTime;` followed by `$From = ...` becomes a create-variable
+activity with an empty Value and fails with `CE0038 "The 'Value' property is
+required."` Write `DECLARE $From DateTime = $Filter/FromDate;`.
+
+### The trial license caps concurrent sessions, and browser tests leak them
+
+After a few test runs, logins started failing with a bare "Sign in failed" on
+the login form. Nothing in the app was wrong — the runtime log had it:
+
+```
+ERROR - Connector: An error has occurred while handling the request. :
+  Maximum number of sessions exceeded! (You are currently using a trial license)
+```
+
+Closing a Playwright page does **not** end the Mendix session; it lingers
+server-side until it times out. Each test run therefore burns session slots
+until the cap is hit, and the symptom (failed login) points nowhere near the
+cause.
+
+Both test files now navigate to `/logout` before closing each page. If logins
+start failing for no reason, check the runtime log for this message before
+suspecting passwords, and restart the app to clear the accumulated sessions.
+
+### `CREATE MICROFLOW` is not re-runnable; `exec` applies scripts that fail `check`
+
+Two operational gotchas that cost a cycle each:
+
+- `CREATE MICROFLOW` errors with "already exists" rather than overwriting, so a
+  re-run silently skips the edit you just made. All microflow scripts here now
+  use `CREATE OR REPLACE MICROFLOW`.
+- `mxcli exec` does **not** refuse a script that `mxcli check` flags as an
+  error. A page with an invalid widget property was written to the model
+  anyway. Always run `check` before `exec` and read its output.
 
 ### Open security items, deliberately deferred
 

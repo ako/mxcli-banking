@@ -37,7 +37,7 @@ CREATE DEMO USER 'admin' PASSWORD 'RRAdmin2026!!' (Administrator);
  * Legacy accd.bcode was a bare integer referencing nothing; RR001 is the
  * code the seed data uses for it.
  */
-CREATE MICROFLOW Banking.SUB_SeedBranches ()
+CREATE OR REPLACE MICROFLOW Banking.SUB_SeedBranches ()
 RETURNS Banking.Branch AS $MainBranch
 FOLDER 'Demo data'
 BEGIN
@@ -80,7 +80,7 @@ END;
  * Runs in the system context, so entity access rules do not apply — which
  * is why it can see every customer rather than only the current user's.
  */
-CREATE MICROFLOW Banking.SCH_AfterStartup ()
+CREATE OR REPLACE MICROFLOW Banking.SCH_AfterStartup ()
 RETURNS Boolean AS $Seeded
 FOLDER 'Demo data'
 BEGIN

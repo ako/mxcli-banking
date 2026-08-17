@@ -17,7 +17,7 @@
  * not a Customer (an Administrator, say), so the dashboard simply shows
  * no data rather than erroring.
  */
-CREATE MICROFLOW Banking.DS_CurrentCustomer ()
+CREATE OR REPLACE MICROFLOW Banking.DS_CurrentCustomer ()
 RETURNS Banking.Customer AS $Customer
 FOLDER 'Datasources'
 BEGIN
@@ -29,18 +29,29 @@ END;
 /
 
 /**
- * Accounts held by the logged-in customer, newest first.
+ * Accounts held by the logged-in customer.
  *
- * Even though this retrieves without an explicit owner filter, the
- * AccountHolder entity access rule constrains it to the current user's
- * accounts. That is the point of doing row-level security in the model
- * rather than in each query, which is where the legacy system failed.
+ * The ownership constraint is stated HERE, in the query, and not left to
+ * the entity access rule alone.
+ *
+ * Why: a Mendix microflow retrieves WITHOUT applying entity access unless
+ * its "Apply entity access" property is set, and MDL cannot set that
+ * property (see FINDINGS.md). An unconstrained retrieve therefore returns
+ * every customer's rows; the access rule then blanks the attributes the
+ * user may not read, so the page *looks* correct while the datasource has
+ * actually loaded other people's objects. Measured on the Slice 2 mini
+ * statement: "1 to 5 of 5" with three empty rows, for a customer who owns
+ * three lines.
+ *
+ * The access rule is still there and still the backstop. This is the
+ * second lock, not a replacement for it.
  */
-CREATE MICROFLOW Banking.DS_MyAccounts ()
+CREATE OR REPLACE MICROFLOW Banking.DS_MyAccounts ()
 RETURNS LIST OF Banking.Account AS $Accounts
 FOLDER 'Datasources'
 BEGIN
   RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
     SORT BY AccountNumber ASC;
   RETURN $Accounts;
 END;

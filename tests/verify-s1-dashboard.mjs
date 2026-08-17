@@ -50,6 +50,19 @@ async function login(page, user, password) {
   );
 }
 
+/**
+ * End the Mendix session, not just the browser page.
+ *
+ * The developer/trial license caps concurrent sessions, and closing a page
+ * leaves its server-side session alive until it times out. Repeated test
+ * runs then fail at the login form with "Sign in failed", while the
+ * runtime log shows "Maximum number of sessions exceeded! (You are
+ * currently using a trial license)".
+ */
+async function logout(page) {
+  await page.goto(`${BASE}/logout`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+}
+
 const browser = await chromium.launch({ headless: true });
 
 try {
@@ -59,6 +72,20 @@ try {
   await login(page, 'rahul', 'RRCustomer2026!');
 
   let body = await page.innerText('body');
+
+  // Count the account rows, not just look for absent numbers. An
+  // unconstrained retrieve returns other customers' objects and entity
+  // access blanks them, so they render as EMPTY rows — invisible to a
+  // "is 100000002 in the DOM" check but very much loaded. See FINDINGS.md.
+  const accountRows = async () => page.evaluate(() => {
+    const lv = document.querySelector('.mx-name-lvAccounts');
+    if (!lv) return { total: -1, withContent: -1 };
+    const items = [...lv.querySelectorAll('li')];
+    return {
+      total: items.length,
+      withContent: items.filter((i) => i.innerText.trim().length > 0).length,
+    };
+  });
 
   check('welcome shows the inherited FullName', /Demo Customer rahul/.test(body));
   check('anti-phishing notice is present', /never sends you email\/SMS/.test(body));
@@ -74,6 +101,14 @@ try {
     'XPath constraint on Banking.Account',
   );
 
+  const rowsRahul = await accountRows();
+  check(
+    'exactly one account row was retrieved, none blank',
+    rowsRahul.total === 1 && rowsRahul.withContent === 1,
+    `${rowsRahul.withContent} with content / ${rowsRahul.total} total`,
+  );
+
+  await logout(page);
   await page.close();
 
   // --- priya ------------------------------------------------------------
@@ -90,7 +125,15 @@ try {
     'XPath constraint on Banking.Account',
   );
 
+  const rowsPriya = await accountRows();
+  check(
+    'exactly one account row was retrieved, none blank',
+    rowsPriya.total === 1 && rowsPriya.withContent === 1,
+    `${rowsPriya.withContent} with content / ${rowsPriya.total} total`,
+  );
+
   await page.screenshot({ path: 'tests/screenshots/s1-dashboard-priya.png', fullPage: true });
+  await logout(page);
   await page.close();
 } finally {
   await browser.close();

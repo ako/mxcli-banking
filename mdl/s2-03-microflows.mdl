@@ -1,0 +1,144 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2: statement microflows
+--
+-- The legacy account statement built its query by concatenating two
+-- request parameters into SQL:
+--
+--   "select * from widep where cac="+a+" and ddate>='"
+--     +request.getParameter("orderdate")+"' and ddate<='"
+--     +request.getParameter("ordedate")+"'"
+--
+-- Here the dates arrive as typed DateTime values on a non-persistent
+-- object and are passed to a retrieve as variables, so there is no string
+-- to inject into.
+--
+-- Every retrieve below states its ownership constraint explicitly rather
+-- than relying on the entity access rule. A Mendix microflow retrieve does
+-- not apply entity access unless the microflow's "Apply entity access"
+-- property is set, and MDL cannot set it — see FINDINGS.md.
+-- =====================================================================
+
+/**
+ * Build the statement form's default state: the current customer's first
+ * account, over the last 30 days.
+ *
+ * Datasource for the DataView on Statement_Overview. Returns a
+ * non-persistent object, so nothing is written to the database.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_NewStatementFilter ()
+RETURNS Banking.StatementFilter AS $Filter
+FOLDER 'Datasources'
+BEGIN
+  -- Constrained in the query, not left to the entity access rule: a
+  -- microflow retrieve does not apply entity access unless the microflow
+  -- says so, and MDL cannot set that property. See FINDINGS.md.
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY AccountNumber ASC;
+  $FirstAccount = HEAD($Accounts);
+
+  $Filter = CREATE Banking.StatementFilter (
+    FromDate = addDays([%CurrentDateTime%], -30),
+    ToDate = [%CurrentDateTime%],
+    Banking.StatementFilter_Account = $FirstAccount
+  );
+
+  RETURN $Filter;
+END;
+/
+
+/**
+ * The ledger lines for the selected account and date range, newest first.
+ *
+ * Mendix binds the parameter from the enclosing DataView's object, so the
+ * ListView on Statement_Overview refreshes whenever the customer changes
+ * the account or either date.
+ *
+ * Ownership is constrained in the query as well as by the access rule, so
+ * a tampered account reference returns nothing rather than someone else's
+ * statement.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_StatementLines (
+  $Filter: Banking.StatementFilter
+)
+RETURNS LIST OF Banking.Transaction AS $Lines
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Account FROM $Filter/Banking.StatementFilter_Account;
+
+  -- DECLARE must carry its value. A bare `DECLARE $From DateTime;`
+  -- followed by a separate assignment becomes a create-variable activity
+  -- with an empty Value and fails the build with CE0038.
+  DECLARE $From DateTime = $Filter/FromDate;
+  DECLARE $To DateTime = $Filter/ToDate;
+
+  -- The ownership clause is not redundant with the account clause: the
+  -- filter object is client-side state, so the account reference on it is
+  -- attacker-controlled. This makes a swapped reference return nothing.
+  RETRIEVE $Lines FROM Banking.Transaction
+    WHERE '[Banking.Transaction_Account = $Account
+            and Banking.Transaction_Account/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]''
+            and BookedOn >= $From and BookedOn <= $To]'
+    SORT BY BookedOn DESC;
+
+  RETURN $Lines;
+END;
+/
+
+/**
+ * The customer's five most recent ledger lines, across every account they
+ * hold.
+ *
+ * The legacy "mini statement" was not mini: ministat.jsp rendered whatever
+ * the session happened to hold, which was every transaction the login
+ * query had loaded. This one is bounded, and bounded to the right rows —
+ * the LIMIT has to be applied AFTER the ownership constraint, not before.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MiniStatement ()
+RETURNS LIST OF Banking.Transaction AS $Lines
+FOLDER 'Datasources'
+BEGIN
+  -- Without this clause the LIMIT is applied across EVERY customer's
+  -- ledger and then the unreadable rows render blank — measured as
+  -- "1 to 5 of 5" with three empty rows for a customer owning three.
+  RETRIEVE $Lines FROM Banking.Transaction
+    WHERE '[Banking.Transaction_Account/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY BookedOn DESC
+    LIMIT 5;
+
+  RETURN $Lines;
+END;
+/
+
+/**
+ * Re-run the statement query after the customer changes the account or a
+ * date.
+ *
+ * This is needed because a datasource microflow on a nested grid does NOT
+ * re-execute just because an input widget wrote to the enclosing
+ * DataView's object. Editing an attribute marks the object changed; only a
+ * *refresh in client* makes dependent datasources re-run. Without this,
+ * the date pickers move but the grid keeps showing the original 30 days —
+ * verified: setting "To" to 1/1/2020 left all three lines on screen.
+ *
+ * The CHANGE is a no-op assignment; REFRESH is the whole point of it.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_RefreshStatement (
+  $Filter: Banking.StatementFilter
+)
+RETURNS Boolean AS $Refreshed
+FOLDER 'Actions'
+BEGIN
+  CHANGE $Filter (ToDate = $Filter/ToDate) REFRESH;
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.ACT_RefreshStatement TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_NewStatementFilter TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_StatementLines TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MiniStatement TO Banking.AccountHolder;
+/

@@ -64,8 +64,8 @@ browser, not at a layer.
 | # | Slice | State |
 |---|---|---|
 | 1 | Foundation, identity, home — Customer/Branch/Account, roles, row-level security, dashboard, demo data | **Done** |
-| 2 | Ledger and statements — Transaction, account statement with date range, mini statement | Next |
-| 3 | Beneficiaries — CRUD with validation | |
+| 2 | Ledger and statements — Transaction, account statement with date range, mini statement | **Done** |
+| 3 | Beneficiaries — CRUD with validation | Next |
 | 4 | Transfers — atomic, server-side limit and balance checks | |
 | 5 | Bill payments — Biller reference data | |
 | 6 | Profile and credentials — change name/mobile/password, SMS notification seam | |
@@ -98,9 +98,21 @@ Demo users are enabled (development only — see `FINDINGS.md`).
 ~/.mxcli/mxbuild/11.13.0/modeler/mx check RRNetBanking.mpr   # model consistency
 ./mxcli lint -p RRNetBanking.mpr -m Banking                  # conventions
 node tests/verify-s1-dashboard.mjs                           # browser, app must be running
+node tests/verify-s2-statements.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.
+
+Two rules the browser tests encode, both learned the hard way (`FINDINGS.md`):
+
+- **Assert row counts, not just absent values.** A microflow retrieve does not
+  apply entity access unless the microflow says so — and MDL cannot say so — so
+  an unconstrained datasource loads other customers' rows and entity access
+  merely blanks them. A blank row contains no account number, so "their number
+  is not in the DOM" passes while the leak is real. Every datasource microflow
+  therefore states its own ownership constraint.
+- **Sign out at the end of a test.** The trial license caps concurrent
+  sessions, and closing a browser page does not end the server-side session.
 
 ## Working on this repo
 

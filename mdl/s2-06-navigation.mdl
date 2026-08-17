@@ -1,0 +1,21 @@
+-- =====================================================================
+-- RRNetBanking — Slice 2: navigation
+--
+-- Adds the two statement entries. The legacy left menu (afterlogin.jsp)
+-- listed HOME, ACCOUNT STATEMENT, MINI STATEMENT, TRANSFER MONEY, LOANS,
+-- PROFILE, BALANCE, BENEFICIERY, BILL PAY and REGISTRATION NEW ACCOUNT;
+-- this menu grows towards that list one slice at a time.
+--
+-- BALANCE has no entry of its own: the dashboard already shows the
+-- balance of every account, so a separate page would duplicate it.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Administration.Account_Overview FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+    MENU ITEM 'Account statement' PAGE Banking.Statement_Overview;
+    MENU ITEM 'Mini statement' PAGE Banking.MiniStatement_Overview;
+  );
+/
