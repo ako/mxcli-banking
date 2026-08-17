@@ -67,19 +67,26 @@ browser, not at a layer.
 | 2 | Ledger and statements — Transaction, account statement with date range, mini statement | **Done** |
 | 3 | Beneficiaries — CRUD with validation | **Done** |
 | 4 | Transfers — atomic, server-side limit and balance checks | **Done** |
-| 5 | Bill payments — Biller reference data | Next |
-| 6 | Profile and credentials — change name/mobile/password, SMS notification seam | |
+| 5 | Bill payments — Biller reference data | **Done** |
+| 6 | Profile and credentials — change name/mobile/password, SMS notification seam | Next |
 | 7 | Open an additional account | |
 | 8 | Public content, loans brochure, admin back-office | |
 
 Parked by decision, present in the source document but never implemented in it:
 investments, downloadable forms, loan applications, forgot-password.
 
-**Known limitation carried forward from Slice 4:** the transfer balance check is
-read-then-write with no row lock, so two simultaneous transfers from the same
-account could overdraw it. Each transfer is atomic; a pair is not serialisable.
-See `FINDINGS.md` for the three ways to close it — this is a must-fix before any
-real deployment.
+### Needs Studio Pro
+
+Two settings this project cannot reach through MDL, both of which should be on
+before any real deployment:
+
+| Setting | Where | Why |
+|---|---|---|
+| **Optimistic locking** | App Settings → Runtime | Money movement reads a balance, checks it, then writes it. Without this, two simultaneous transfers or bill payments from one account can both pass the check and overdraw it. With it, the second commit fails instead. Note it *detects* rather than retries — a retry loop around the conflict is still worth adding. |
+| **Strict mode** (SEC005) | Project Security | Strengthens XPath constraint enforcement; relevant to CVE-2023-23835. |
+
+Demo users are also still enabled at Production security level (SEC003) and must
+be turned off. See `FINDINGS.md` for detail on all three.
 
 ### Model scripts
 
@@ -113,6 +120,7 @@ node tests/verify-s1-dashboard.mjs                           # browser, app must
 node tests/verify-s2-statements.mjs
 node tests/verify-s3-beneficiaries.mjs
 node tests/verify-s4-transfers.mjs
+node tests/verify-s5-billpayments.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.

@@ -1,0 +1,84 @@
+-- =====================================================================
+-- RRNetBanking — Slice 5: the bill payment page
+--
+-- Replaces transbill.jsp, whose company dropdown had no `name` attribute
+-- and whose inner <form action="form_action.asp"> shadowed the outer one.
+-- Both fields here are bound to the form object, so both actually reach
+-- the server.
+--
+-- The biller list is a DATABASE datasource: entity access applies to
+-- client database retrieves, and BillerName is already a String, so
+-- unlike the account and payee selectors this one needs no extra label
+-- attribute.
+-- =====================================================================
+
+/**
+ * Pay a bill to a registered company.
+ */
+CREATE OR REPLACE PAGE Banking.BillPayment_NewEdit
+  (
+    Title: 'Bill payment',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'bill-payment',
+    Folder: 'Bill payments'
+  )
+  {
+    LAYOUTGRID lgBill {
+      ROW rowHeading {
+        COLUMN colHeading (DesktopWidth: 12) {
+          DYNAMICTEXT dtHeading (Content: 'Bill payment', RenderMode: H2)
+          CONTAINER cntIntro {
+            DYNAMICTEXT dtIntro (
+              Content: 'Pay telephone, electricity, insurance and credit card bills directly from your account, 24 hours a day.'
+            )
+          }
+        }
+      }
+
+      ROW rowForm {
+        COLUMN colForm (DesktopWidth: 12) {
+          DATAVIEW dvBill (DataSource: MICROFLOW Banking.DS_NewBillPaymentForm) {
+            COMBOBOX cbFromAccount (
+              Label: 'Pay from',
+              Association: BillPaymentForm_FromAccount,
+              DataSource: DATABASE Banking.Account,
+              CaptionAttribute: AccountLabel
+            )
+            COMBOBOX cbBiller (
+              Label: 'Company',
+              Association: BillPaymentForm_Biller,
+              DataSource: DATABASE Banking.Biller,
+              CaptionAttribute: BillerName
+            )
+            TEXTBOX txtConsumer (Label: 'Consumer number', Attribute: ConsumerNumber)
+            TEXTBOX txtAmount (Label: 'Amount', Attribute: Amount)
+
+            FOOTER footerBill {
+              ACTIONBUTTON btnPay (
+                Caption: 'Pay',
+                Action: MICROFLOW Banking.ACT_SubmitBillPayment(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+            }
+          }
+        }
+      }
+
+      ROW rowHistory {
+        COLUMN colHistory (DesktopWidth: 12) {
+          DYNAMICTEXT dtHistoryHeading (Content: 'Recent bill payments', RenderMode: H3)
+          DATAGRID dgBillPayments (DataSource: MICROFLOW Banking.DS_MyBillPayments) {
+            COLUMN colWhen (Attribute: PaidOn, Caption: 'Date')
+            COLUMN colBiller (Attribute: BillerName, Caption: 'Company')
+            COLUMN colConsumer (Attribute: ConsumerNumber, Caption: 'Consumer number')
+            COLUMN colAmount (Attribute: Amount, Caption: 'Amount')
+            COLUMN colReference (Attribute: Reference, Caption: 'Reference')
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.BillPayment_NewEdit TO Banking.AccountHolder;
+/

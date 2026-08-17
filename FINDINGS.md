@@ -540,7 +540,7 @@ Verified by invariant rather than by inspection: total across all accounts was
 75,000 before and after, and each rejected transfer left both the balances and
 the ledger row-count untouched.
 
-### ⚠ KNOWN LIMITATION: the balance check is read-then-write, with no lock
+### ⚠ KNOWN LIMITATION: the balance check is read-then-write
 
 `SUB_ExecuteTransfer` reads the balance, `VAL_TransferAmount` checks it, then
 the microflow writes the new one. Two transfers from the same account arriving
@@ -548,19 +548,48 @@ at the same moment can both pass the check and overdraw the account. The
 transaction guarantees each transfer is *atomic*; it does not make the pair
 *serialisable*.
 
-Mendix offers no row-level lock inside a microflow, so closing this needs one
-of:
+**Correction (same day).** This finding originally said Mendix "offers no
+row-level lock inside a microflow, so closing this needs" hand-built optimistic
+concurrency. That was wrong in a way worth being precise about: **Mendix ships
+optimistic locking as an app setting** — App Settings → **Runtime** tab →
+*Optimistic locking*. With it on, the runtime tracks an `MxObjectVersion` Long
+on every persistable entity, and a commit whose version no longer matches the
+database throws `ConcurrentModificationRuntimeException`.
 
-- optimistic concurrency — store a version on the account, re-read and retry on
-  mismatch;
-- serialising transfers per account through a task queue;
-- pushing the debit into a database-level conditional update
-  (`... set balance = balance - :amt where id = :id and balance >= :amt`) via a
-  Java action, and treating "0 rows affected" as insufficient funds.
+That is exactly the lost-update case here. With it enabled, the second of two
+racing transfers fails its commit instead of silently overdrawing the account,
+and the whole microflow rolls back with it.
 
-Not addressed in this slice, and deliberately not papered over. For a real
-deployment this is a must-fix, and the third option is the one I would reach
-for first.
+Two things it does NOT do, so it is not a complete answer on its own:
+
+- **It detects, it does not retry.** Mendix's own guidance is that the handler
+  must catch the exception, *reload* the object, re-apply and retry — "trying to
+  commit the same object without reloading always results in an optimistic
+  locking error." Without that, the customer sees a failure rather than a
+  transfer that just works. The money is safe either way, which is the important
+  half.
+- **It cannot be enabled from MDL.** `ALTER SETTINGS MODEL OptimisticLocking`
+  fails with `unknown model setting`; the only model settings mxcli accepts are
+  `AfterStartupMicroflow`, `HashAlgorithm`, `BcryptCost`, `JavaVersion`,
+  `RoundingMode`, `AllowUserMultipleSessions` and
+  `ScheduledEventTimeZoneCode`. So it joins strict mode (SEC005) on the
+  short list of things this project needs Studio Pro for.
+
+The remaining alternative, if the retry loop proves awkward, is to push the
+debit into a conditional update (`set balance = balance - :amt where id = :id
+and balance >= :amt`) via a Java action and treat "0 rows affected" as
+insufficient funds — that makes check and write a single atomic statement rather
+than detecting the conflict after the fact.
+
+### `mxcli check` does not validate settings keys — only `exec` does
+
+`ALTER SETTINGS MODEL OptimisticLocking = true;`, `UseOptimisticLocking` and
+`EnableOptimisticLocking` all pass `mxcli check` cleanly. The grammar accepts
+any identifier there; the key is only validated at `exec`, which then says
+`unknown model setting: OptimisticLocking`.
+
+A reminder that "check passed" means the text parses, not that the statement
+means anything.
 
 ### `SHOW MESSAGE`: `TYPE` goes before `OBJECTS`, and the error says otherwise
 
@@ -613,6 +642,45 @@ constraint in a *microflow* datasource is the leak Slice 2 fixed.
 
 Rule of thumb: a database datasource is constrained by the model; a microflow
 datasource is constrained only by what you write in it.
+
+---
+
+## 2026-08-17 — Slice 5 (bill payments)
+
+### Not every selector needs a denormalised label
+
+Worth recording as the counter-example to the four label attributes added in
+Slices 2–4. The biller ComboBox binds `CaptionAttribute: BillerName`, which is
+already a `String(100)` on the entity, and it just works.
+
+So the rule is narrower than it first looked: a label attribute is needed when
+the caption source is **not a String** (AutoNumber account numbers) or when the
+captioned row is **not readable** by this user (another customer's account). A
+plain String attribute on a readable reference-data entity needs nothing.
+
+### `DATABASE` datasource + entity access is the safe combination
+
+The biller dropdown reads `DataSource: DATABASE Banking.Biller` with no
+constraint written anywhere, and that is fine — entity access applies to client
+database retrieves. The same absence of a constraint in a *microflow* datasource
+is the leak Slice 2 had to fix. Restating because the two look identical in the
+MDL and behave oppositely.
+
+### Two test-side lessons, not app bugs
+
+Both failures in the first run of the Slice 5 suite were mine, and both are the
+sort of thing that would otherwise get "fixed" by weakening an assertion:
+
+- **Reading a ComboBox's options too early.** `innerText` on
+  `.widget-combobox-menu` right after the click returns before the list is
+  populated, so the check failed while `selectBiller()` — which waits for the
+  `li` — succeeded moments later on the same dropdown. Wait for
+  `.widget-combobox-menu li`, then read the items.
+- **Reusing a form across two rejection cases.** The second rejection was
+  asserted against a page still showing the first one's validation message. Each
+  case now re-opens the page for a clean form. The assertion also prints which
+  message it actually found, so a future failure says what happened instead of
+  just "false".
 
 ### Open security items, deliberately deferred
 

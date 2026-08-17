@@ -1,0 +1,22 @@
+-- =====================================================================
+-- RRNetBanking — Slice 5: security for bill payments
+--
+-- Billers are reference data: every customer reads them, only
+-- administrators write them. Payments are readable only by the customer
+-- whose account was debited, and writable by nobody — the record is
+-- created by SUB_ExecuteBillPayment and never edited.
+-- =====================================================================
+
+GRANT Banking.AccountHolder ON Banking.Biller (READ *);
+/
+GRANT Banking.Administrator ON Banking.Biller (READ *, WRITE *);
+/
+
+GRANT Banking.AccountHolder ON Banking.BillPayment (READ *)
+  WHERE '[Banking.BillPayment_FromAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']';
+/
+GRANT Banking.Administrator ON Banking.BillPayment (READ *);
+/
+
+GRANT Banking.AccountHolder ON Banking.BillPaymentForm (READ *, WRITE *);
+/

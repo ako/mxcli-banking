@@ -1,0 +1,268 @@
+-- =====================================================================
+-- RRNetBanking — Slice 5: bill payment microflows
+--
+-- Structurally the same shape as the transfer slice, with one difference:
+-- a bill payment has no payee object to derive the payer account from, so
+-- the form carries one. That means it has to be re-resolved server-side
+-- under an ownership constraint before any money moves — the transfer
+-- flow got that for free by deriving the account from the payee.
+--
+-- The biller is a real reference now. In the legacy page it was never
+-- submitted at all (the <select> had no `name`), so the servlet debited
+-- the account and recorded nothing about where the money went.
+--
+-- ORDER: callee-first. LAYERING: ACT_ is thin.
+-- =====================================================================
+
+/**
+ * A blank bill payment form, defaulted to the customer's first account.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_NewBillPaymentForm ()
+RETURNS Banking.BillPaymentForm AS $Form
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Accounts FROM Banking.Account
+    WHERE '[Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY AccountNumber ASC;
+  $FirstAccount = HEAD($Accounts);
+
+  $Form = CREATE Banking.BillPaymentForm (
+    Banking.BillPaymentForm_FromAccount = $FirstAccount
+  );
+
+  RETURN $Form;
+END;
+/
+
+/**
+ * The customer's own bill payments, newest first.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_MyBillPayments ()
+RETURNS LIST OF Banking.BillPayment AS $Payments
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Payments FROM Banking.BillPayment
+    WHERE '[Banking.BillPayment_FromAccount/Banking.Account/Banking.Account_Customer = ''[%CurrentUser%]'']'
+    SORT BY PaidOn DESC;
+  RETURN $Payments;
+END;
+/
+
+/**
+ * Re-read the chosen payer account under an ownership constraint.
+ *
+ * The transfer flow had no equivalent of this because it derived the
+ * account from the payee. Here the account comes off the form, so it is
+ * exactly the kind of client-supplied reference that has to be
+ * re-resolved rather than trusted.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ConfirmPayerAccount (
+  $Account: Banking.Account
+)
+RETURNS Banking.Account AS $Confirmed
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Confirmed FROM Banking.Account
+    WHERE '[id = $Account and Banking.Account_Customer = ''[%CurrentUser%]'']'
+    LIMIT 1;
+  RETURN $Confirmed;
+END;
+/
+
+/**
+ * Check the amount against the payer's balance and the account's status.
+ *
+ * Returns true when the payment is REJECTED, having shown the reason.
+ * There is no per-biller limit in this app — the legacy system had none
+ * either, and a bill is paid to a company the bank does not control, so a
+ * limit would be a policy decision rather than a reconstruction.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_BillPaymentAmount (
+  $Form: Banking.BillPaymentForm,
+  $FromAccount: Banking.Account
+)
+RETURNS Boolean AS $Rejected
+FOLDER 'Validation'
+BEGIN
+  IF $FromAccount/Status != Banking.ENUM_AccountStatus.Active THEN
+    SHOW MESSAGE 'That account is not active, so bills cannot be paid from it.' TYPE Error;
+    RETURN true;
+  END IF;
+
+  IF $Form/Amount > $FromAccount/Balance THEN
+    VALIDATION FEEDBACK $Form/Amount
+      MESSAGE 'That is more than the balance available on the account.';
+    RETURN true;
+  END IF;
+
+  RETURN false;
+END;
+/
+
+/**
+ * Validate the form and return the payer account, or empty when the
+ * payment must not proceed.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_BillPaymentForm (
+  $Form: Banking.BillPaymentForm
+)
+RETURNS Banking.Account AS $FromAccount
+FOLDER 'Validation'
+BEGIN
+  RETRIEVE $Biller FROM $Form/Banking.BillPaymentForm_Biller;
+
+  IF $Biller = empty THEN
+    SHOW MESSAGE 'Choose the company you want to pay.' TYPE Warning;
+    RETURN empty;
+  ELSIF $Biller/IsActive != true THEN
+    SHOW MESSAGE 'That company is no longer accepting payments.' TYPE Error;
+    RETURN empty;
+  END IF;
+
+  IF $Form/ConsumerNumber = empty THEN
+    VALIDATION FEEDBACK $Form/ConsumerNumber
+      MESSAGE 'Enter the consumer or account number the bill is for.';
+    RETURN empty;
+  END IF;
+
+  IF $Form/Amount = empty THEN
+    VALIDATION FEEDBACK $Form/Amount MESSAGE 'Enter an amount.';
+    RETURN empty;
+  ELSIF $Form/Amount <= 0 THEN
+    VALIDATION FEEDBACK $Form/Amount MESSAGE 'The amount must be greater than 0.';
+    RETURN empty;
+  END IF;
+
+  RETRIEVE $Selected FROM $Form/Banking.BillPaymentForm_FromAccount;
+
+  IF $Selected = empty THEN
+    SHOW MESSAGE 'Choose the account to pay from.' TYPE Warning;
+    RETURN empty;
+  END IF;
+
+  $FromAccount = CALL MICROFLOW Banking.SUB_ConfirmPayerAccount (
+    Account = $Selected
+  );
+
+  IF $FromAccount = empty THEN
+    SHOW MESSAGE 'That account is not one of yours.' TYPE Error;
+    RETURN empty;
+  END IF;
+
+  $Rejected = CALL MICROFLOW Banking.VAL_BillPaymentAmount (
+    Form = $Form,
+    FromAccount = $FromAccount
+  );
+
+  IF $Rejected = true THEN
+    RETURN empty;
+  END IF;
+
+  RETURN $FromAccount;
+END;
+/
+
+/**
+ * Debit the account, record the payment, and write the single ledger
+ * line.
+ *
+ * One ledger line, not two: the biller is outside the bank, so there is
+ * no counterparty account to credit. The legacy uppay() did the same —
+ * a debit and one 'W' row — it just did not record the biller.
+ *
+ * Same transaction guarantees and the same read-then-write limitation as
+ * the transfer flow; see FINDINGS.md.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ExecuteBillPayment (
+  $Form: Banking.BillPaymentForm,
+  $FromAccount: Banking.Account
+)
+RETURNS Banking.BillPayment AS $Payment
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Biller FROM $Form/Banking.BillPaymentForm_Biller;
+
+  DECLARE $Amount Decimal = $Form/Amount;
+  DECLARE $BalanceAfter Decimal = $FromAccount/Balance - $Amount;
+
+  $Payment = CREATE Banking.BillPayment (
+    Amount = $Amount,
+    PaidOn = [%CurrentDateTime%],
+    ConsumerNumber = $Form/ConsumerNumber,
+    BillerName = $Biller/BillerName,
+    Banking.BillPayment_FromAccount = $FromAccount,
+    Banking.BillPayment_Biller = $Biller
+  ) COMMIT;
+
+  CHANGE $FromAccount (Balance = $BalanceAfter) COMMIT;
+
+  $Line = CREATE Banking.Transaction (
+    BookedOn = [%CurrentDateTime%],
+    TransactionType = Banking.ENUM_TransactionType.Debit,
+    Amount = $Amount,
+    BalanceAfter = $BalanceAfter,
+    Description = 'Bill payment - ' + $Biller/BillerName,
+    Banking.Transaction_Account = $FromAccount,
+    Banking.Transaction_BillPayment = $Payment
+  ) COMMIT;
+
+  RETURN $Payment;
+END;
+/
+
+/**
+ * Clear the form after a completed payment.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_ResetBillPaymentForm (
+  $Form: Banking.BillPaymentForm
+)
+RETURNS Boolean AS $Reset
+FOLDER 'Actions'
+BEGIN
+  CHANGE $Form (
+    Amount = empty,
+    ConsumerNumber = empty
+  ) REFRESH;
+  RETURN true;
+END;
+/
+
+/**
+ * Submit the bill payment form.
+ *
+ * Confirms with a blocking message for the same reason as a transfer:
+ * money left the account.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SubmitBillPayment (
+  $Form: Banking.BillPaymentForm
+)
+RETURNS Boolean AS $Done
+FOLDER 'Actions'
+BEGIN
+  $FromAccount = CALL MICROFLOW Banking.VAL_BillPaymentForm (Form = $Form);
+
+  IF $FromAccount = empty THEN
+    RETURN false;
+  END IF;
+
+  $Payment = CALL MICROFLOW Banking.SUB_ExecuteBillPayment (
+    Form = $Form,
+    FromAccount = $FromAccount
+  );
+
+  $Reset = CALL MICROFLOW Banking.SUB_ResetBillPaymentForm (Form = $Form);
+
+  SHOW MESSAGE 'Bill paid. Reference {1}.'
+    TYPE Information
+    OBJECTS [toString($Payment/Reference)];
+
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_NewBillPaymentForm TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyBillPayments TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SubmitBillPayment TO Banking.AccountHolder;
+/
