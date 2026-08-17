@@ -45,3 +45,10 @@ BEGIN
   RETURN $Accounts;
 END;
 /
+
+-- A microflow used as a page datasource needs an allowed role, or
+-- 'mx check' fails with CE0106.
+GRANT EXECUTE ON MICROFLOW Banking.DS_CurrentCustomer TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_MyAccounts TO Banking.AccountHolder;
+/

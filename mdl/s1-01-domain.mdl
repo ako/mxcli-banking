@@ -23,7 +23,7 @@ CREATE OR MODIFY ENUMERATION Banking.ENUM_AccountStatus (
  * A branch of Bank of RR. Legacy: the bare integer accd.bcode, which
  * referenced nothing and could not be resolved to a name.
  */
-CREATE PERSISTENT ENTITY Banking.Branch (
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Branch (
   Code: String(10) NOT NULL UNIQUE ERROR 'A branch with this code already exists.',
   BranchName: String(100) NOT NULL,
   City: String(100)
@@ -49,7 +49,7 @@ COMMENT 'A branch of Bank of RR. Reference data, maintained by Administrators.';
 -- users, and CE7247 forbids required/unique validation rules on a user
 -- entity or its generalizations. Requiredness is enforced in the
 -- registration microflow instead (Slice 7).
-CREATE PERSISTENT ENTITY Banking.Customer EXTENDS Administration.Account (
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Customer EXTENDS Administration.Account (
   Address: String(200),
   MobileNumber: String(15)
 )
@@ -63,7 +63,7 @@ COMMENT 'Internet banking customer. Login and password are inherited from Admini
  * and Balance is only ever changed by microflows — never by an entity
  * access rule — so no page can write it directly.
  */
-CREATE PERSISTENT ENTITY Banking.Account (
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Account (
   AccountNumber: AutoNumber DEFAULT 100000001,
   Balance: Decimal NOT NULL,
   Status: Enumeration(Banking.ENUM_AccountStatus),

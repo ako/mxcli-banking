@@ -56,6 +56,52 @@ existing one, and maintain their own profile (name, mobile, password).
 | Theme | `ledger` (light, dense, data-heavy — suits statements and transaction lists) |
 | Tooling | mxcli, Dev Container, Claude Code |
 
+## Implementation slices
+
+The build is sliced vertically — each slice ends at something demoable in a
+browser, not at a layer.
+
+| # | Slice | State |
+|---|---|---|
+| 1 | Foundation, identity, home — Customer/Branch/Account, roles, row-level security, dashboard, demo data | **Done** |
+| 2 | Ledger and statements — Transaction, account statement with date range, mini statement | Next |
+| 3 | Beneficiaries — CRUD with validation | |
+| 4 | Transfers — atomic, server-side limit and balance checks | |
+| 5 | Bill payments — Biller reference data | |
+| 6 | Profile and credentials — change name/mobile/password, SMS notification seam | |
+| 7 | Open an additional account | |
+| 8 | Public content, loans brochure, admin back-office | |
+
+Parked by decision, present in the source document but never implemented in it:
+investments, downloadable forms, loan applications, forgot-password.
+
+### Model scripts
+
+Every model change is an MDL script under `mdl/`, applied with
+`./mxcli exec`. They are the source of truth and are re-runnable in order —
+Slice 1 was rebuilt from them once already. `mdl/s1-00-teardown.mdl` explains
+why that mattered.
+
+### Demo logins
+
+Demo users are enabled (development only — see `FINDINGS.md`).
+
+| User | Password | Role |
+|---|---|---|
+| `rahul` | `RRCustomer2026!` | Customer |
+| `priya` | `RRCustomer2026!` | Customer |
+| `admin` | `RRAdmin2026!!` | Administrator |
+
+### Verifying
+
+```bash
+~/.mxcli/mxbuild/11.13.0/modeler/mx check RRNetBanking.mpr   # model consistency
+./mxcli lint -p RRNetBanking.mpr -m Banking                  # conventions
+node tests/verify-s1-dashboard.mjs                           # browser, app must be running
+```
+
+`mxcli check` passing does **not** mean `mx check` passes. Run both.
+
 ## Working on this repo
 
 The `mxcli` binary is git-ignored (~85 MB). `.claude/bootstrap-mxcli.sh` fetches

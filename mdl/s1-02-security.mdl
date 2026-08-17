@@ -43,6 +43,35 @@ CREATE USER ROLE Customer (Banking.AccountHolder);
 ALTER USER ROLE Administrator ADD MODULE ROLES (Banking.Administrator);
 /
 
+-- Every user role needs at least one System module role or 'mx check'
+-- fails with CE0156 and the role cannot sign in. System.User and
+-- System.Administrator exist but are not listed by SHOW MODULE ROLES.
+ALTER USER ROLE Customer ADD MODULE ROLES (System.User);
+/
+
+-- Drop the blank app's leftover 'User' role. This app has exactly two
+-- kinds of user — Customer and Administrator — and a third role with no
+-- Banking module roles is not harmless: it inherits the default home page
+-- from navigation and then fails 'mx check' with one CE2729 per widget on
+-- it ("No access to entity ... for user role 'User'").
+--
+-- It leaves Administration.User, FeedbackModule.User and
+-- MyFirstModule.User unmapped, which is fine — nothing grants against
+-- them yet. Slice 6 adds Administration.User to Customer for the
+-- change-password page.
+--
+-- The blank app's own demo users go first. Dropping a user role does NOT
+-- clean up demo users that reference it — it leaves the demo user behind
+-- pointing at a role that is gone, and 'mx check' then fails with
+-- CE1613 "The selected user role 'User' no longer exists."
+-- s1-05 creates this app's own demo users (rahul, priya, admin).
+DROP DEMO USER 'demo_user';
+/
+DROP DEMO USER 'demo_administrator';
+/
+DROP USER ROLE User;
+/
+
 -- ---------------------------------------------------------------------
 -- Branch: reference data. Readable by everyone who logs in, writable
 -- only by administrators.

@@ -9,7 +9,18 @@
 -- The anti-phishing notice is carried over verbatim from afterlogin.jsp.
 -- =====================================================================
 
-CREATE PAGE Banking.Home_Dashboard
+/**
+ * The customer landing page, reached straight after login.
+ *
+ * Shows who is logged in, the anti-phishing notice carried over from the
+ * legacy afterlogin.jsp, and one row per account the customer holds with
+ * its number, branch, balance and status.
+ *
+ * Both datasources are constrained by the AccountHolder entity access
+ * rules, so a customer cannot see another customer's accounts even though
+ * DS_MyAccounts retrieves without an explicit owner filter.
+ */
+CREATE OR REPLACE PAGE Banking.Home_Dashboard
   (
     Title: 'Internet Banking',
     Layout: Atlas_Core.Atlas_Default,
