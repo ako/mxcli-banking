@@ -27,6 +27,15 @@ const { chromium } = require('playwright');
 const BASE = process.env.BASE_URL ?? 'http://localhost:8080';
 const failures = [];
 
+const oql = (q) => execSync(`./mxcli oql -p RRNetBanking.mpr "${q}"`,
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+/** How many ledger lines rahul actually owns, across all his accounts. */
+const rahulLedgerLines = () => (oql(
+  'SELECT t.Reference, c.Name FROM Banking.Transaction as t inner join '
+  + 'Banking.Transaction_Account/Banking.Account/Banking.Account_Customer/Banking.Customer as c',
+).match(/\|\s*rahul\s*\|/g) ?? []).length;
+
 function check(name, condition, detail = '') {
   console.log(`  [${condition ? 'PASS' : 'FAIL'}] ${name}${detail ? ` — ${detail}` : ''}`);
   if (!condition) failures.push(name);
@@ -148,8 +157,12 @@ try {
   console.log('\nrahul — mini statement:');
   await openMenuItem(page, 'Mini statement');
   await page.waitForSelector('.mx-name-dgMini', { timeout: 30000 });
+  // Wait for a populated ROW, not merely for a digit somewhere in the
+  // grid: the pager reads "1 to 5 of 5" before the rows land, so a digit
+  // test passes on an empty grid and the row count then reads 0.
   await page.waitForFunction(
-    () => /Opening deposit/.test(document.querySelector('.mx-name-dgMini')?.innerText ?? ''),
+    () => [...document.querySelectorAll('.mx-name-dgMini [role="row"]')]
+      .slice(1).some((r) => r.innerText.trim().length > 0),
     null,
     { timeout: 30000 },
   );
@@ -157,15 +170,24 @@ try {
   const mini = await page.innerText('.mx-name-dgMini');
   const miniRows = await gridRows(page, '.mx-name-dgMini');
 
-  check('mini statement shows the ledger', /Opening deposit/.test(mini));
+  // Both of these were literals — "Opening deposit" and "rahul's 3 lines"
+  // — and both went stale as later slices gave rahul transfers, bill
+  // payments and a second account. The mini statement is the last five
+  // lines, so the opening deposit falls off it as soon as there are more
+  // than five. The claim being checked is unchanged: five at most, and
+  // every one of them his.
+  check('mini statement shows ledger lines', /\d/.test(mini));
   check('mini statement is bounded to 5 lines', miniRows.total <= 5, `${miniRows.total} rows`);
 
-  // rahul owns exactly 3 ledger lines. Anything more means the retrieve
-  // reached into another customer's ledger, even if it renders blank.
+  // The count that matters. An unconstrained retrieve pulls other
+  // customers' lines and entity access blanks them — and until the Slice 1
+  // fix, LIMIT 5 was applied BEFORE the ownership filter, so rahul lost
+  // one of his own lines to a blank row. Blank rows are the symptom.
+  const expectedMini = Math.min(5, rahulLedgerLines());
   check(
-    'mini statement retrieved ONLY rahul\'s 3 lines',
-    miniRows.total === 3 && miniRows.withContent === 3,
-    `${miniRows.withContent} with content / ${miniRows.total} total ${miniRows.pager}`,
+    "mini statement retrieved ONLY rahul's lines",
+    miniRows.total === expectedMini && miniRows.withContent === expectedMini,
+    `${miniRows.withContent} with content / ${miniRows.total} total, db says ${rahulLedgerLines()} ${miniRows.pager}`,
   );
 
   await logout(page);

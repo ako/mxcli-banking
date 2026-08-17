@@ -26,6 +26,35 @@ const { chromium } = require('playwright');
 const BASE = process.env.BASE_URL ?? 'http://localhost:8080';
 const failures = [];
 
+const oql = (q) => execSync(`./mxcli oql -p RRNetBanking.mpr "${q}"`,
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+/**
+ * How many accounts a customer actually holds.
+ *
+ * Hard-coded 1 here until Slice 7, which let rahul open a second one — so
+ * the row-count assertion below asks the database rather than assuming.
+ */
+/**
+ * The FullName the database holds for a login.
+ *
+ * Not a literal: the Slice 6 suite exercises profile editing and renames
+ * rahul, so 'Demo Customer rahul' is only true until that suite has run
+ * once. What this slice claims is that the welcome shows the INHERITED
+ * FullName, which is checked by comparing against the stored value.
+ */
+const fullNameOf = (login) => {
+  const row = oql('SELECT Name, FullName FROM Banking.Customer')
+    .split('\n').find((l) => new RegExp(`\\|\\s*${login}\\s*\\|`).test(l));
+  return row ? row.split('|').map((c) => c.trim()).filter(Boolean)
+    .find((c) => c !== login) : null;
+};
+
+const accountsHeldBy = (login) => (oql(
+  'SELECT a.AccountNumber, c.Name FROM Banking.Account as a '
+  + 'inner join Banking.Account_Customer/Banking.Customer as c',
+).match(new RegExp(`\\|\\s*${login}\\s*\\|`, 'g')) ?? []).length;
+
 function check(name, condition, detail = '') {
   const status = condition ? 'PASS' : 'FAIL';
   console.log(`  [${status}] ${name}${detail ? ` — ${detail}` : ''}`);
@@ -41,10 +70,16 @@ async function login(page, user, password) {
   // The dashboard heading renders when DS_CurrentCustomer returns, but the
   // account list is a second, independent datasource — waiting only for the
   // heading races it and intermittently sees an empty list.
+  //
+  // The grid is .mx-name-dgAccounts, not the .mx-name-lvAccounts listview
+  // this suite was written against: Slice 6 replaced the Slice 1 dashboard
+  // with the per-account summary. This suite kept passing on nothing until
+  // the Slice 8 regression run, because a stale selector times out rather
+  // than failing a named check.
   await page.waitForSelector('text=/Welcome,/', { timeout: 30000 });
-  await page.waitForSelector('.mx-name-lvAccounts', { timeout: 30000 });
+  await page.waitForSelector('.mx-name-dgAccounts', { timeout: 30000 });
   await page.waitForFunction(
-    () => /A\/C no:\s*\d/.test(document.querySelector('.mx-name-lvAccounts')?.innerText ?? ''),
+    () => /\d/.test(document.querySelector('.mx-name-dgAccounts')?.innerText ?? ''),
     null,
     { timeout: 30000 },
   );
@@ -76,21 +111,27 @@ try {
   // access blanks them, so they render as EMPTY rows — invisible to a
   // "is 100000002 in the DOM" check but very much loaded. See FINDINGS.md.
   const accountRows = async () => page.evaluate(() => {
-    const lv = document.querySelector('.mx-name-lvAccounts');
-    if (!lv) return { total: -1, withContent: -1 };
-    const items = [...lv.querySelectorAll('li')];
+    const grid = document.querySelector('.mx-name-dgAccounts');
+    if (!grid) return { total: -1, withContent: -1 };
+    const items = [...grid.querySelectorAll('[role="row"]')].slice(1);
     return {
       total: items.length,
       withContent: items.filter((i) => i.innerText.trim().length > 0).length,
     };
   });
 
-  check('welcome shows the inherited FullName', /Demo Customer rahul/.test(body));
+  check('welcome shows the inherited FullName',
+    body.includes(fullNameOf('rahul')), fullNameOf('rahul'));
   check('anti-phishing notice is present', /never sends you email\/SMS/.test(body));
   check('own account number is shown', /100000001/.test(body));
-  check('branch name and code are shown', /RR Main Branch/.test(body) && /RR001/.test(body));
-  check('balance is shown', /25,?000/.test(body));
-  check('account status is shown', /Active/.test(body));
+  check('branch name is shown', /RR Main Branch/.test(body));
+  check('balance is shown', /\d{2},?\d{3}/.test(body));
+  // Slice 1 showed the branch CODE and the account STATUS here. Slice 6
+  // replaced both with the two figures a customer opens a banking app for
+  // — how many ledger lines the account has and when it last moved. The
+  // branch code is still on the record; it is just not on this page.
+  check('the ledger count and last activity are shown',
+    /Transactions/.test(body) && /Last activity/.test(body));
 
   // The row-level security check: priya's account must not be visible.
   check(
@@ -100,10 +141,11 @@ try {
   );
 
   const rowsRahul = await accountRows();
+  const heldByRahul = accountsHeldBy('rahul');
   check(
-    'exactly one account row was retrieved, none blank',
-    rowsRahul.total === 1 && rowsRahul.withContent === 1,
-    `${rowsRahul.withContent} with content / ${rowsRahul.total} total`,
+    'exactly his own accounts were retrieved, none blank',
+    rowsRahul.total === heldByRahul && rowsRahul.withContent === heldByRahul,
+    `${rowsRahul.withContent} with content / ${rowsRahul.total} total, db says ${heldByRahul}`,
   );
 
   await logout(page);
@@ -115,7 +157,8 @@ try {
   await login(page, 'priya', 'RRCustomer2026!');
   body = await page.innerText('body');
 
-  check('welcome shows the inherited FullName', /Demo Customer priya/.test(body));
+  check('welcome shows the inherited FullName',
+    body.includes(fullNameOf('priya')), fullNameOf('priya'));
   check('own account number is shown', /100000002/.test(body));
   check(
     "rahul's account is NOT visible to priya",
@@ -124,10 +167,11 @@ try {
   );
 
   const rowsPriya = await accountRows();
+  const heldByPriya = accountsHeldBy('priya');
   check(
-    'exactly one account row was retrieved, none blank',
-    rowsPriya.total === 1 && rowsPriya.withContent === 1,
-    `${rowsPriya.withContent} with content / ${rowsPriya.total} total`,
+    'exactly her own accounts were retrieved, none blank',
+    rowsPriya.total === heldByPriya && rowsPriya.withContent === heldByPriya,
+    `${rowsPriya.withContent} with content / ${rowsPriya.total} total, db says ${heldByPriya}`,
   );
 
   await page.screenshot({ path: 'tests/screenshots/s1-dashboard-priya.png', fullPage: true });

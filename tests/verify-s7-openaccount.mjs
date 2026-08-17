@@ -166,10 +166,18 @@ try {
   const dash = await page.innerText('.mx-name-dgAccounts');
   check('it appears on the dashboard', new RegExp(String(after[after.length - 1])).test(dash));
 
+  // Not a literal 2: this suite opens an account every time it runs, so
+  // rahul's account count grows with each run. What the slice claims is
+  // that the dashboard lists exactly the accounts he holds and no blanks.
+  const heldByRahul = (oql(
+    'SELECT a.AccountNumber, c.Name FROM Banking.Account as a '
+    + 'inner join Banking.Account_Customer/Banking.Customer as c',
+  ).match(/\|\s*rahul\s*\|/g) ?? []).length;
   const dashRows = await page.evaluate(() =>
     [...document.querySelectorAll('.mx-name-dgAccounts [role="row"]')]
       .slice(1).filter((r) => r.innerText.trim().length > 0).length);
-  check('the dashboard now lists both accounts, none blank', dashRows === 2, `${dashRows} rows`);
+  check('the dashboard lists every account he holds, none blank',
+    dashRows === heldByRahul, `${dashRows} rows, db says ${heldByRahul}`);
 
   await page.screenshot({ path: 'tests/screenshots/s7-openaccount-rahul.png', fullPage: true });
   await logout(page);

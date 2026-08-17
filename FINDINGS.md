@@ -835,3 +835,132 @@ deployment:
 Security level is Production rather than Prototype on purpose: prototype
 security does not enforce entity access rules, so the row-level XPath
 constraints that this app depends on would be inert.
+
+---
+
+## 2026-08-17 — Slice 8 (public content, loans brochure, admin back-office)
+
+### Mendix serves page URLs under `/p/`, and the wrong form fails silently
+
+`http://host/backoffice-billers` renders a **blank page**. `http://host/p/backoffice-billers`
+renders the page. Not a 404, not a redirect, not an error in the runtime log — a
+blank body.
+
+That matters more for tests than for users, because it makes a whole class of
+security assertion pass for the wrong reason. The Slice 8 suite drives a
+*customer* at each back-office URL and asserts the page does not render. All four
+checks passed against the un-prefixed URL, which renders for nobody. They only
+became meaningful once the same suite navigated an *administrator* to the same
+URLs and waited for their grids — a positive control that immediately failed and
+exposed the prefix.
+
+**Rule:** a check that asserts something is ABSENT needs a sibling check that the
+same thing is PRESENT for someone.
+
+A related trap in the same area: a page URL containing a slash
+(`backoffice/billers`) is accepted by MDL, written into the model, and passes
+`mx check`. Whether the runtime routes it was never established — the URLs were
+flattened to `backoffice-billers` before the `/p/` prefix was found, so the
+original timeout had two candidate causes and only one was confirmed. Flat URLs
+are what this app uses; nested ones are untested, not known-broken.
+
+### `COUNT()` and `SUM()` are list activities, not expression functions
+
+Same shape as the Slice 1 `HEAD()` finding. Used inline in a `CREATE`:
+
+```mdl
+$Summary = CREATE Banking.AdminSummary ( CustomerCount = COUNT($Customers) );
+```
+
+…this parses, applies, and then fails the build with CE0117. Assign to a
+variable first and use the variable. `DS_AdminSummary` does six of these.
+
+### The back office made an existing access rule visibly wrong
+
+Slice 5 granted `AccountHolder` an unconstrained `READ` on `Banking.Biller`, and
+the bill payment page's company dropdown is a **client** database retrieve.
+Client retrieves *do* apply entity access — unlike the microflow retrieves behind
+the Slice 1 leak — so an unconstrained rule meant a deactivated biller stayed in
+the customer's dropdown.
+
+The payment itself was already refused server-side by `VAL_BillPaymentForm`'s
+`IsActive` check, so this was a bad-error-message bug rather than a hole. It only
+became visible once there was a back office that could flip `IsActive`: until
+Slice 8, nothing in the app ever deactivated a biller, so the rule had never been
+exercised. Fixed in `s8-02` with `WHERE '[IsActive = true]'`.
+
+Worth remembering as a pattern: adding the *administration* of a flag is what
+tests whether the flag was ever honoured.
+
+### MDL writes one navigation menu for every role
+
+`CREATE OR REPLACE NAVIGATION` takes a single `MENU (...)`. `HOME PAGE ... FOR
+Administrator` is per-role; menu items are not. So a customer sees the four
+back-office items, clicks one, and gets nothing — every back-office page and
+microflow is granted to `Administrator` only.
+
+That is an untidy menu, not an access hole, and the Slice 8 suite asserts the
+refusal rather than assuming it. Splitting the menu per role needs Studio Pro.
+
+### The regression run is what found four stale tests
+
+Slice 8 changed a shared access rule and the navigation, so all seven earlier
+suites were re-run. Three had been broken by *earlier* slices and nobody had
+noticed:
+
+- **Slice 1** waited on `.mx-name-lvAccounts`, the listview Slice 6 replaced with
+  `.mx-name-dgAccounts`. A stale selector **times out** rather than failing a
+  named check, so the suite looked broken rather than wrong — which is exactly
+  why it sat unfixed. It also asserted `'Demo Customer rahul'`, which the Slice 6
+  profile test renames, and `rows === 1`, which Slice 7 invalidates by opening a
+  second account.
+- **Slice 2** asserted the mini statement contains `'Opening deposit'` and
+  `total === 3`. The mini statement is the last five lines; rahul now has eleven,
+  so the opening deposit has fallen off the end.
+- **Slices 6 and 7** both hard-coded rahul's account count.
+
+All four now derive their expectations from `mxcli oql`. The lesson is narrower
+than "avoid literals": a literal about *seeded* data is fine, a literal about
+data that *any other suite mutates* is a time bomb.
+
+One more, found while fixing Slice 2: waiting for `/\d/` in a grid's text matches
+the pager (`"1 to 5 of 5"`) before any row has landed, so the row count then
+reads 0. Wait for a populated row, not for a character.
+
+### Sessions leak from crashed test runs, not just from missing logouts
+
+The Slice 6 fix — call `mx.logout()` at the end — only covers the happy path. Three
+runs that died mid-suite were enough to exhaust the trial licence's concurrent
+session cap, after which the *next* run fails at the login form with a timeout
+that has nothing to do with the code under test. The Slice 8 suite records every
+page it opens and logs them all out from its `finally` block.
+
+### A suite that cannot clean up after itself should say so
+
+Nothing in this app deletes a biller: every payment ever made references one and
+the association is PREVENT-on-delete. The Slice 8 suite therefore cannot remove
+the biller it creates. It takes a fresh code each run (`S8T1`, `S8T2`, …) and
+leaves the previous one **deactivated** — which is the state the back office
+actually offers — rather than pretending to tidy up or failing on its own
+leftovers.
+
+The loan-product half *is* restored, because deactivation is reversible.
+
+### Branches are deliberately read-only in the back office
+
+Billers and loan products get New and Edit; branches get neither. Opening or
+closing a branch has premises, staff and regulatory filings behind it, and every
+account references one. `DS_AllBranches` exists so an administrator can see the
+network; the seeding microflow creates the two this app needs.
+
+The test asserts no *mutating* button on that grid rather than no buttons at all
+— a Mendix datagrid ships its own paging and selection controls.
+
+### The strongest case for an OQL view is still blocked
+
+`DS_AdminSummary` does six counts in six queries. A view would do it in one, and
+this is the case with the least resistance — no per-customer constraint to
+express, so the association problem behind the Slice 6 dashboard does not even
+arise. It is still blocked, for the plainer reason recorded in `s6-01`: mxcli
+cannot `GRANT` on a view or return one from a microflow, so nothing MDL writes
+can read it.

@@ -1,0 +1,93 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8 (Content and back-office)
+--
+-- Three things: the loans brochure and public pages the legacy app had as
+-- static JSP, and a back-office for the reference data that until now
+-- existed only because a seeding microflow created it.
+--
+-- Loans were brochure-only in the legacy app — loan.jsp listed Home,
+-- Education and Vehicle loans, each linking to the same LOAN.doc file,
+-- with no application workflow anywhere. That scope is kept: these are
+-- products to read about, not to apply for. A loan application is on the
+-- parked list.
+-- =====================================================================
+
+CREATE OR MODIFY ENUMERATION Banking.ENUM_LoanType (
+  Home 'Home loan',
+  Education 'Education loan',
+  Vehicle 'Vehicle loan'
+);
+/
+
+/**
+ * A loan product the bank offers. Reference data, maintained by
+ * administrators.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.LoanProduct (
+  ProductCode: String(20) NOT NULL UNIQUE ERROR 'A loan product with this code already exists.',
+  ProductName: String(100) NOT NULL,
+  LoanType: Enumeration(Banking.ENUM_LoanType),
+  InterestRate: Decimal,
+  Summary: String(500),
+  IsActive: Boolean
+)
+COMMENT 'A loan product. Brochure content — the legacy app had no application workflow either.';
+/
+
+/**
+ * Form state for the back-office biller editor.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.BillerForm (
+  BillerCode: String(20),
+  BillerName: String(100),
+  Category: Enumeration(Banking.ENUM_BillerCategory),
+  IsActive: Boolean
+)
+COMMENT 'Form state for the admin biller editor. Not stored.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.BillerForm_Biller
+  FROM Banking.BillerForm TO Banking.Biller
+  TYPE Reference
+  COMMENT 'The biller being edited; empty when adding.';
+/
+
+/**
+ * Form state for the back-office loan product editor.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.LoanProductForm (
+  ProductCode: String(20),
+  ProductName: String(100),
+  LoanType: Enumeration(Banking.ENUM_LoanType),
+  InterestRate: Decimal,
+  Summary: String(500),
+  IsActive: Boolean
+)
+COMMENT 'Form state for the admin loan product editor. Not stored.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.LoanProductForm_LoanProduct
+  FROM Banking.LoanProductForm TO Banking.LoanProduct
+  TYPE Reference
+  COMMENT 'The loan product being edited; empty when adding.';
+/
+
+/**
+ * The back-office overview figures, filled by DS_AdminSummary.
+ *
+ * Non-persistent for the same reason DashboardCard is: this is exactly
+ * what an OQL view entity is for, and mxcli cannot grant access to a view
+ * or read one from a microflow (see s6-01). Admin reporting is where the
+ * view would have been least constrained — no per-customer filtering
+ * needed — and it is still blocked.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.AdminSummary (
+  CustomerCount: Integer,
+  AccountCount: Integer,
+  TotalBalance: Decimal,
+  TransferCount: Integer,
+  BillPaymentCount: Integer,
+  BeneficiaryCount: Integer
+)
+COMMENT 'Back-office totals. Would be an OQL view if mxcli could read one.';
+/

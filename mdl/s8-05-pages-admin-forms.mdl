@@ -1,0 +1,80 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: back-office edit forms
+--
+-- Split from the overviews for the usual reason: the overview buttons
+-- call microflows that open these pages, and mxcli resolves no forward
+-- references. Order is s8-03 -> s8-05 -> s8-06 -> s8-07 -> s8-09.
+--
+-- No Url on either page: both take a non-persistable parameter, which
+-- cannot appear in a URL (CE5605), and they are only reached from a
+-- microflow.
+-- =====================================================================
+
+CREATE OR REPLACE PAGE Banking.Biller_NewEdit
+  (
+    Title: 'Biller',
+    Layout: Atlas_Core.Atlas_Default,
+    Folder: 'Back office',
+    Params: { $Form: Banking.BillerForm }
+  )
+  {
+    LAYOUTGRID lgBillerForm {
+      ROW rowBillerForm {
+        COLUMN colBillerForm (DesktopWidth: 12) {
+          DATAVIEW dvBiller (DataSource: $Form) {
+            TEXTBOX txtBillerCode (Label: 'Code', Attribute: BillerCode)
+            TEXTBOX txtBillerName (Label: 'Company name', Attribute: BillerName)
+            COMBOBOX cbCategory (Label: 'Category', Attribute: Category)
+            CHECKBOX chkBillerActive (Label: 'Accepting payments', Attribute: IsActive)
+            FOOTER footerBiller {
+              ACTIONBUTTON btnSaveBiller (
+                Caption: 'Save',
+                Action: MICROFLOW Banking.ACT_SaveBiller(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+              ACTIONBUTTON btnCancelBiller (Caption: 'Cancel', Action: CLOSE_PAGE)
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+CREATE OR REPLACE PAGE Banking.LoanProduct_NewEdit
+  (
+    Title: 'Loan product',
+    Layout: Atlas_Core.Atlas_Default,
+    Folder: 'Back office',
+    Params: { $Form: Banking.LoanProductForm }
+  )
+  {
+    LAYOUTGRID lgLoanForm {
+      ROW rowLoanForm {
+        COLUMN colLoanForm (DesktopWidth: 12) {
+          DATAVIEW dvLoanProduct (DataSource: $Form) {
+            TEXTBOX txtProductCode (Label: 'Code', Attribute: ProductCode)
+            TEXTBOX txtProductName (Label: 'Product name', Attribute: ProductName)
+            COMBOBOX cbLoanType (Label: 'Type', Attribute: LoanType)
+            TEXTBOX txtRate (Label: 'Interest rate %', Attribute: InterestRate)
+            TEXTAREA txtSummary (Label: 'Details', Attribute: Summary)
+            CHECKBOX chkLoanActive (Label: 'Shown to customers', Attribute: IsActive)
+            FOOTER footerLoan {
+              ACTIONBUTTON btnSaveLoan (
+                Caption: 'Save',
+                Action: MICROFLOW Banking.ACT_SaveLoanProduct(Form: $currentObject),
+                ButtonStyle: Primary
+              )
+              ACTIONBUTTON btnCancelLoan (Caption: 'Cancel', Action: CLOSE_PAGE)
+            }
+          }
+        }
+      }
+    }
+  };
+/
+
+GRANT VIEW ON PAGE Banking.Biller_NewEdit TO Banking.Administrator;
+/
+GRANT VIEW ON PAGE Banking.LoanProduct_NewEdit TO Banking.Administrator;
+/

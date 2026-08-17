@@ -1,0 +1,312 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: brochure and back-office microflows
+--
+-- Nothing here shows a page; the two that do are in s8-05, after the
+-- pages they open exist. ORDER: callee-first. LAYERING: ACT_ is thin.
+-- =====================================================================
+
+/**
+ * The loan products a customer can read about.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_ActiveLoanProducts ()
+RETURNS LIST OF Banking.LoanProduct AS $Products
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Products FROM Banking.LoanProduct
+    WHERE '[IsActive = true]'
+    SORT BY ProductName ASC;
+  RETURN $Products;
+END;
+/
+
+/**
+ * Every loan product, for the back office.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_AllLoanProducts ()
+RETURNS LIST OF Banking.LoanProduct AS $Products
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Products FROM Banking.LoanProduct
+    SORT BY ProductCode ASC;
+  RETURN $Products;
+END;
+/
+
+/**
+ * Every biller, for the back office. The customer-facing dropdown shows
+ * only active ones; this shows all so they can be reactivated.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_AllBillers ()
+RETURNS LIST OF Banking.Biller AS $Billers
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Billers FROM Banking.Biller
+    SORT BY BillerCode ASC;
+  RETURN $Billers;
+END;
+/
+
+/**
+ * Every branch, for the back office.
+ *
+ * Read-only on purpose. Opening and closing branches is a bank-network
+ * operation with premises, staff and regulatory filings behind it — not
+ * something a web form should do. The seeding microflow creates the two
+ * this app needs.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_AllBranches ()
+RETURNS LIST OF Banking.Branch AS $Branches
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Branches FROM Banking.Branch
+    SORT BY Code ASC;
+  RETURN $Branches;
+END;
+/
+
+/**
+ * The back-office totals.
+ *
+ * Six counts in six queries. An OQL view would do this in one, and this
+ * is the case with the strongest argument for it — no per-customer
+ * constraint to express, so the security gap that blocks the customer
+ * dashboard does not even apply. It is still blocked, because mxcli
+ * cannot read a view from a microflow at all.
+ */
+CREATE OR REPLACE MICROFLOW Banking.DS_AdminSummary ()
+RETURNS Banking.AdminSummary AS $Summary
+FOLDER 'Datasources'
+BEGIN
+  RETRIEVE $Customers FROM Banking.Customer;
+  RETRIEVE $Accounts FROM Banking.Account;
+  RETRIEVE $Transfers FROM Banking.Transfer;
+  RETRIEVE $BillPayments FROM Banking.BillPayment;
+  RETRIEVE $Beneficiaries FROM Banking.Beneficiary;
+
+  -- COUNT() and SUM() are list ACTIVITIES, not Mendix expression
+  -- functions: used inline in a CREATE they fail the build with CE0117,
+  -- exactly like HEAD() in an IF condition (Slice 1). Assign first.
+  $CustomerCount = COUNT($Customers);
+  $AccountCount = COUNT($Accounts);
+  $TotalBalance = SUM($Accounts.Balance);
+  $TransferCount = COUNT($Transfers);
+  $BillPaymentCount = COUNT($BillPayments);
+  $BeneficiaryCount = COUNT($Beneficiaries);
+
+  $Summary = CREATE Banking.AdminSummary (
+    CustomerCount = $CustomerCount,
+    AccountCount = $AccountCount,
+    TotalBalance = $TotalBalance,
+    TransferCount = $TransferCount,
+    BillPaymentCount = $BillPaymentCount,
+    BeneficiaryCount = $BeneficiaryCount
+  );
+
+  RETURN $Summary;
+END;
+/
+
+-- ---------------------------------------------------------------------
+-- Billers
+-- ---------------------------------------------------------------------
+
+/**
+ * A biller code must be present and unique, and a name is required.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_BillerForm (
+  $Form: Banking.BillerForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/BillerCode = empty THEN
+    VALIDATION FEEDBACK $Form/BillerCode MESSAGE 'Enter a biller code.';
+    RETURN false;
+  END IF;
+
+  IF $Form/BillerName = empty THEN
+    VALIDATION FEEDBACK $Form/BillerName MESSAGE 'Enter a company name.';
+    RETURN false;
+  END IF;
+
+  RETRIEVE $Existing FROM $Form/Banking.BillerForm_Biller;
+  DECLARE $Code String = $Form/BillerCode;
+  RETRIEVE $Clashes FROM Banking.Biller
+    WHERE '[BillerCode = $Code]';
+  $ClashCount = COUNT($Clashes);
+  $Clash = HEAD($Clashes);
+
+  IF $ClashCount > 0 and $Clash != $Existing THEN
+    VALIDATION FEEDBACK $Form/BillerCode MESSAGE 'That biller code is already in use.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Create or update a biller from the form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SaveBiller (
+  $Form: Banking.BillerForm
+)
+RETURNS Banking.Biller AS $Biller
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Existing FROM $Form/Banking.BillerForm_Biller;
+
+  IF $Existing != empty THEN
+    CHANGE $Existing (
+      BillerCode = $Form/BillerCode,
+      BillerName = $Form/BillerName,
+      Category = $Form/Category,
+      IsActive = $Form/IsActive
+    ) COMMIT;
+    RETURN $Existing;
+  END IF;
+
+  $Biller = CREATE Banking.Biller (
+    BillerCode = $Form/BillerCode,
+    BillerName = $Form/BillerName,
+    Category = $Form/Category,
+    IsActive = $Form/IsActive
+  ) COMMIT;
+
+  RETURN $Biller;
+END;
+/
+
+/**
+ * Save the biller form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SaveBiller (
+  $Form: Banking.BillerForm
+)
+RETURNS Boolean AS $Saved
+FOLDER 'Actions'
+BEGIN
+  $IsValid = CALL MICROFLOW Banking.VAL_BillerForm (Form = $Form);
+
+  IF $IsValid = false THEN
+    RETURN false;
+  END IF;
+
+  $Biller = CALL MICROFLOW Banking.SUB_SaveBiller (Form = $Form);
+
+  CLOSE PAGE;
+  RETURN true;
+END;
+/
+
+-- ---------------------------------------------------------------------
+-- Loan products
+-- ---------------------------------------------------------------------
+
+/**
+ * A product code must be present and unique, and a name is required.
+ */
+CREATE OR REPLACE MICROFLOW Banking.VAL_LoanProductForm (
+  $Form: Banking.LoanProductForm
+)
+RETURNS Boolean AS $IsValid
+FOLDER 'Validation'
+BEGIN
+  IF $Form/ProductCode = empty THEN
+    VALIDATION FEEDBACK $Form/ProductCode MESSAGE 'Enter a product code.';
+    RETURN false;
+  END IF;
+
+  IF $Form/ProductName = empty THEN
+    VALIDATION FEEDBACK $Form/ProductName MESSAGE 'Enter a product name.';
+    RETURN false;
+  END IF;
+
+  RETRIEVE $Existing FROM $Form/Banking.LoanProductForm_LoanProduct;
+  DECLARE $Code String = $Form/ProductCode;
+  RETRIEVE $Clashes FROM Banking.LoanProduct
+    WHERE '[ProductCode = $Code]';
+  $ClashCount = COUNT($Clashes);
+  $Clash = HEAD($Clashes);
+
+  IF $ClashCount > 0 and $Clash != $Existing THEN
+    VALIDATION FEEDBACK $Form/ProductCode MESSAGE 'That product code is already in use.';
+    RETURN false;
+  END IF;
+
+  RETURN true;
+END;
+/
+
+/**
+ * Create or update a loan product from the form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.SUB_SaveLoanProduct (
+  $Form: Banking.LoanProductForm
+)
+RETURNS Banking.LoanProduct AS $Product
+FOLDER 'Actions'
+BEGIN
+  RETRIEVE $Existing FROM $Form/Banking.LoanProductForm_LoanProduct;
+
+  IF $Existing != empty THEN
+    CHANGE $Existing (
+      ProductCode = $Form/ProductCode,
+      ProductName = $Form/ProductName,
+      LoanType = $Form/LoanType,
+      InterestRate = $Form/InterestRate,
+      Summary = $Form/Summary,
+      IsActive = $Form/IsActive
+    ) COMMIT;
+    RETURN $Existing;
+  END IF;
+
+  $Product = CREATE Banking.LoanProduct (
+    ProductCode = $Form/ProductCode,
+    ProductName = $Form/ProductName,
+    LoanType = $Form/LoanType,
+    InterestRate = $Form/InterestRate,
+    Summary = $Form/Summary,
+    IsActive = $Form/IsActive
+  ) COMMIT;
+
+  RETURN $Product;
+END;
+/
+
+/**
+ * Save the loan product form.
+ */
+CREATE OR REPLACE MICROFLOW Banking.ACT_SaveLoanProduct (
+  $Form: Banking.LoanProductForm
+)
+RETURNS Boolean AS $Saved
+FOLDER 'Actions'
+BEGIN
+  $IsValid = CALL MICROFLOW Banking.VAL_LoanProductForm (Form = $Form);
+
+  IF $IsValid = false THEN
+    RETURN false;
+  END IF;
+
+  $Product = CALL MICROFLOW Banking.SUB_SaveLoanProduct (Form = $Form);
+
+  CLOSE PAGE;
+  RETURN true;
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW Banking.DS_ActiveLoanProducts TO Banking.AccountHolder;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_AllLoanProducts TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_AllBillers TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_AllBranches TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.DS_AdminSummary TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SaveBiller TO Banking.Administrator;
+/
+GRANT EXECUTE ON MICROFLOW Banking.ACT_SaveLoanProduct TO Banking.Administrator;
+/

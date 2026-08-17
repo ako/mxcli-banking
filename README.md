@@ -37,7 +37,8 @@ existing one, and maintain their own profile (name, mobile, password).
 - **Biller** and **BillPayment** — the companies a customer can pay bills to
   (the original listed Reliance Comm. and TATA Indicom) and the payments made.
 - **LoanProduct** — Home, Education and Vehicle loans. Brochure content in the
-  original; no application workflow existed.
+  original; no application workflow existed. Records here rather than markup, so
+  a rate change is a back-office edit rather than a redeploy.
 
 ## Who logs in
 
@@ -70,10 +71,17 @@ browser, not at a layer.
 | 5 | Bill payments — Biller reference data | **Done** |
 | 6 | Profile and credentials, plus the dashboard summary | **Done** |
 | 7 | Open an additional account | **Done** |
-| 8 | Public content, loans brochure, admin back-office | Next |
+| 8 | Public content, loans brochure, admin back-office | **Done** |
 
 Parked by decision, present in the source document but never implemented in it:
 investments, downloadable forms, loan applications, forgot-password.
+
+**One deliberate omission, in Slice 8.** The legacy app had an
+unauthenticated front page (`1st.jsp`, `contact.jsp`, `services.jsp`) anyone
+could browse. Reproducing that here means enabling guest access, which changes
+the app's attack surface and is what lint SEC004/SEC007 flag. That is the bank's
+call, not a detail to slip in, so Contact and Services sit behind the login with
+everything else.
 
 **One deliberate departure, in Slice 7.** The legacy "open a new account" page
 created a whole new *login* and copied the customer's name, address and mobile
@@ -92,10 +100,11 @@ before any real deployment:
 |---|---|---|
 | **Optimistic locking** | App Settings → Runtime | Money movement reads a balance, checks it, then writes it. Without this, two simultaneous transfers or bill payments from one account can both pass the check and overdraw it. With it, the second commit fails instead. Note it *detects* rather than retries — a retry loop around the conflict is still worth adding. |
 | **Strict mode** (SEC005) | Project Security | Strengthens XPath constraint enforcement; relevant to CVE-2023-23835. |
+| **Per-role menus** | Navigation | MDL writes one menu for all roles, so a customer sees the four back-office items. Every page and microflow behind them is granted to `Administrator` only and the runtime refuses — `verify-s8-backoffice.mjs` asserts the refusal — but the menu should be split per role. |
 | **The `AccountSummary` view's association** | Domain model | `Banking.AccountSummary` is a valid OQL view that mxcli can create but cannot reference — no `GRANT`, no microflow return type. Adding the association (select `c.ID`) and an access rule in Studio Pro turns the dashboard from N+1 microflow queries into one grouped query. |
 
 Demo users are also still enabled at Production security level (SEC003) and must
-be turned off. See `FINDINGS.md` for detail on all three.
+be turned off. See `FINDINGS.md` for detail on all of these.
 
 ### Model scripts
 
@@ -132,6 +141,7 @@ node tests/verify-s4-transfers.mjs
 node tests/verify-s5-billpayments.mjs
 node tests/verify-s6-profile.mjs
 node tests/verify-s7-openaccount.mjs
+node tests/verify-s8-backoffice.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.
@@ -144,8 +154,22 @@ Two rules the browser tests encode, both learned the hard way (`FINDINGS.md`):
   merely blanks them. A blank row contains no account number, so "their number
   is not in the DOM" passes while the leak is real. Every datasource microflow
   therefore states its own ownership constraint.
-- **Sign out at the end of a test.** The trial license caps concurrent
-  sessions, and closing a browser page does not end the server-side session.
+- **Sign out at the end of a test — including when it fails.** The trial
+  licence caps concurrent sessions, and closing a browser page does not end the
+  server-side session. `verify-s8-backoffice.mjs` logs every page it opened out
+  from its `finally` block; three crashed runs without that is enough to make
+  the next run fail at the login form for reasons unrelated to the code.
+- **Assert against the database, not against literals.** Slices 6 and 7 change
+  rahul's name and give him more accounts, so `'Demo Customer rahul'` and
+  `rows === 1` were true only until those suites had run once. A stale selector
+  is worse than a stale literal: `.mx-name-lvAccounts` survived the Slice 6
+  dashboard rebuild and the Slice 1 suite then timed out rather than failing a
+  named check, so it looked broken rather than wrong. Both are fixed; the counts
+  now come from `mxcli oql`.
+- **Give every negative check a positive control.** Mendix serves page URLs
+  under `/p/`, and the wrong form renders a blank page rather than a 404 — so
+  "a customer cannot reach the back office" passed against a URL that renders
+  for nobody. The same URLs are driven as an administrator in the same suite.
 
 ## Working on this repo
 

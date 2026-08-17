@@ -46,6 +46,17 @@ function check(name, condition, detail = '') {
 const oql = (q) => execSync(`./mxcli oql -p RRNetBanking.mpr "${q}"`,
   { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
 
+/**
+ * How many accounts a customer holds.
+ *
+ * Not a literal: the Slice 7 suite opens a new account every time it runs,
+ * so "rahul has one account" is only true until that suite has run once.
+ */
+const accountsHeldBy = (login) => (oql(
+  'SELECT a.AccountNumber, c.Name FROM Banking.Account as a '
+  + 'inner join Banking.Account_Customer/Banking.Customer as c',
+).match(new RegExp(`\\|\\s*${login}\\s*\\|`, 'g')) ?? []).length;
+
 async function login(page, user, password = PASSWORD) {
   await page.goto(BASE, { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#usernameInput, input[name="username"]', { timeout: 30000 });
@@ -125,7 +136,9 @@ try {
   const rows = await page.evaluate(() =>
     [...document.querySelectorAll('.mx-name-dgAccounts [role="row"]')]
       .slice(1).filter((r) => r.innerText.trim().length > 0).length);
-  check('exactly one summary row, none blank', rows === 1, `${rows} rows`);
+  const held = accountsHeldBy('rahul');
+  check('one summary row per account he holds, none blank',
+    rows === held, `${rows} rows, db says ${held}`);
 
   // --- server-side mobile validation --------------------------------------
   console.log('\nthe legacy mobile rules are now enforced server-side:');

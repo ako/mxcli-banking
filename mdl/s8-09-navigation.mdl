@@ -1,0 +1,43 @@
+-- =====================================================================
+-- RRNetBanking — Slice 8: navigation for both roles
+--
+-- Two changes.
+--
+-- The customer menu gains the three content pages the legacy header had
+-- as static JSP links — loan.jsp, services.jsp and contact.jsp.
+--
+-- The administrator's home page moves from Administration.Account_Overview
+-- to Banking.Admin_Dashboard. That page is still reachable (it is in the
+-- Administration module's own navigation and is where users are managed);
+-- it is simply no longer the first thing a bank administrator sees, which
+-- it was only ever by default.
+--
+-- MDL has no per-role menu, so the menu below is the one both roles get.
+-- The back-office items are visible to a customer, and clicking one gets
+-- them nothing: every back-office page and every microflow behind it is
+-- granted to Banking.Administrator only, so the runtime refuses. That is
+-- an untidy menu, not an access hole — and the test asserts the refusal
+-- rather than assuming it.
+-- =====================================================================
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE Banking.Home_Dashboard
+  HOME PAGE Banking.Admin_Dashboard FOR Administrator
+  MENU (
+    MENU ITEM 'Home' PAGE Banking.Home_Dashboard;
+    MENU ITEM 'Account statement' PAGE Banking.Statement_Overview;
+    MENU ITEM 'Mini statement' PAGE Banking.MiniStatement_Overview;
+    MENU ITEM 'Transfer money' PAGE Banking.Transfer_NewEdit;
+    MENU ITEM 'Bill payment' PAGE Banking.BillPayment_NewEdit;
+    MENU ITEM 'Beneficiaries' PAGE Banking.Beneficiary_Overview;
+    MENU ITEM 'Profile' PAGE Banking.Profile_NewEdit;
+    MENU ITEM 'Open an account' PAGE Banking.OpenAccount_NewEdit;
+    MENU ITEM 'Loans' PAGE Banking.Loans_Overview;
+    MENU ITEM 'Services' PAGE Banking.Services_Overview;
+    MENU ITEM 'Contact us' PAGE Banking.Contact_Overview;
+    MENU ITEM 'Back office' PAGE Banking.Admin_Dashboard;
+    MENU ITEM 'Billers' PAGE Banking.Biller_Overview;
+    MENU ITEM 'Loan products' PAGE Banking.LoanProduct_Overview;
+    MENU ITEM 'Branches' PAGE Banking.Branch_Overview;
+  );
+/
