@@ -1,0 +1,191 @@
+-- =====================================================================
+-- RRNetBanking — Slice 6 (Profile, credentials, dashboard summary)
+--
+-- Two things: the self-service profile pages the legacy app had
+-- (name.jsp, mobile.jsp, pass.jsp), and the SMS seam its prose promised
+-- but never built — "The changed username and password can be send
+-- through the sms."
+--
+-- Plus an OQL view entity for the dashboard, which is where the
+-- interesting constraint turned up. See the note on AccountSummary.
+-- =====================================================================
+
+/**
+ * Per-account dashboard summary: balance, branch, how much activity and
+ * when it last happened, in one row per account.
+ *
+ * WHY THIS CARRIES CustomerLogin AND WHY THAT MATTERS
+ *
+ * Mendix view entities CAN have associations — you select the associated
+ * object's `.ID` and the column becomes an association — and with an
+ * association to Banking.Customer this view could be constrained the way
+ * every other entity in this app is:
+ *
+ *   GRANT ... (READ *) WHERE '[Banking.AccountSummary_Customer = ''[%CurrentUser%]'']'
+ *
+ * MDL cannot express that. Declaring `AccountSummary_Customer:
+ * Banking.Customer` parses, but mxcli writes it as an *enumeration*
+ * attribute and the build fails with CE1613 "The selected enumeration
+ * 'Banking.Customer' no longer exists" — while simultaneously reporting
+ * that the entity and the OQL query reference an association that does
+ * not exist, which is Mendix telling us the concept is real. Every other
+ * spelling (`Reference(...)`, `Association(...)`, a trailing ASSOCIATION
+ * keyword) is a parse error, and a separate CREATE ASSOCIATION is
+ * rejected outright with CE6771 "It is not possible to create
+ * associations to/from View Entities."
+ *
+ * It turned out to be worse than that. mxcli cannot reference this view
+ * ANYWHERE once it has been created:
+ *
+ *   GRANT ... ON Banking.AccountSummary   -> entity not found
+ *   RETURNS LIST OF Banking.AccountSummary -> entity not found for return type
+ *   SHOW ENTITIES IN Banking               -> does not list it
+ *
+ * A view entity is effectively write-only in MDL. It builds clean, and
+ * Mendix is perfectly happy with it — but nothing in MDL can grant access
+ * to it or read from it, so no page and no microflow this tool writes can
+ * use it.
+ *
+ * This definition is therefore STAGED WORK, not dead weight: it is valid,
+ * it builds, and finishing it in Studio Pro is two steps — add the
+ * association by selecting c.ID, and add the access rule. Until then the
+ * dashboard is fed by DS_MyDashboard, which aggregates over the
+ * already-secured Account and Transaction entities.
+ *
+ * There is deliberately no customer column on it. The obvious way to
+ * carry one — `cast(c.Name as string(200)) as CustomerLogin` over a join
+ * to Banking.Customer — does not work either: `cast()` is not in the MDL
+ * grammar, and selecting the inherited `c.Name` fails CE6770 whatever
+ * length is declared (String(200) and String(unlimited) both). Since the
+ * view cannot be granted or read from MDL regardless, chasing that was
+ * not worth it — the aggregate columns below are the part worth keeping.
+ *
+ * Two more traps found while getting this far, both quiet:
+ *   * `--` comments are not accepted inside the OQL body. The parse fails,
+ *     `exec` then does not run, and if you are grepping the output for a
+ *     success line you see nothing and can easily read it as success. It
+ *     is how an earlier attempt "passed" while the view had actually been
+ *     dropped and never recreated.
+ *   * `CREATE OR MODIFY` on a view does not prune members the OQL no
+ *     longer produces. After a bad edit it has to be DROPped and recreated
+ *     or CE6770 persists.
+ *
+ * Note the join to Branch is INNER and to Transaction is LEFT: a new
+ * account with no ledger must still appear, with a count of 0.
+ *
+ * CustomerLogin is CAST rather than passed through. System.User.Name is
+ * String(unlimited), and declaring the column String(200) against a
+ * pass-through fails the build with CE6770 "View Entity is out of sync
+ * with the OQL Query".
+ *
+ * Do not put `--` comments inside the OQL body: the MDL parser does not
+ * accept them there, and the resulting parse failure is easy to miss
+ * because `exec` then simply does not run.
+ */
+CREATE OR MODIFY VIEW ENTITY Banking.AccountSummary (
+  AccountNumber: Long,
+  AccountLabel: String(60),
+  Balance: Decimal,
+  BranchName: String(100),
+  TransactionCount: Integer,
+  LastActivityOn: DateTime
+) AS (
+  select
+    a.AccountNumber as AccountNumber,
+    a.AccountLabel as AccountLabel,
+    a.Balance as Balance,
+    b.BranchName as BranchName,
+    count(t.Reference) as TransactionCount,
+    max(t.BookedOn) as LastActivityOn
+  from Banking.Account as a
+  inner join Banking.Account_Branch/Banking.Branch as b
+  left join Banking.Transaction_Account/Banking.Transaction as t
+  group by a.AccountNumber, a.AccountLabel, a.Balance, b.BranchName
+);
+
+/**
+ * What the dashboard shows per account.
+ *
+ * Non-persistent, filled by DS_MyDashboard. This exists because the view
+ * entity above cannot be read or secured from MDL — see its note. The
+ * shape deliberately matches the view's columns, so switching the
+ * datasource over once the view is finished in Studio Pro is a change to
+ * one microflow and nothing else.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.DashboardCard (
+  AccountNumber: Long,
+  AccountLabel: String(60),
+  Balance: Decimal,
+  BranchName: String(100),
+  TransactionCount: Integer,
+  LastActivityOn: DateTime
+)
+COMMENT 'One dashboard row per account. Mirrors the AccountSummary view.';
+/
+
+/**
+ * How a notification would be delivered.
+ */
+CREATE OR MODIFY ENUMERATION Banking.ENUM_NotificationChannel (
+  SMS 'SMS',
+  Email 'Email'
+);
+/
+
+/**
+ * A notification the bank owes the customer.
+ *
+ * THIS IS A SEAM, NOT A GATEWAY. Nothing here sends anything: rows are
+ * queued with IsSent = false and stay that way. The legacy system
+ * promised SMS on credential changes and shipped no SMS code at all, so
+ * this makes the promise explicit and inspectable instead of silently
+ * absent. Wiring a real provider means one scheduled microflow that picks
+ * up unsent rows and calls it — the model does not change.
+ */
+CREATE OR MODIFY PERSISTENT ENTITY Banking.Notification (
+  Reference: AutoNumber DEFAULT 600000001,
+  Channel: Enumeration(Banking.ENUM_NotificationChannel),
+  Recipient: String(100),
+  Message: String(400),
+  QueuedOn: DateTime NOT NULL,
+  IsSent: Boolean,
+  SentOn: DateTime
+)
+INDEX (QueuedOn)
+COMMENT 'A queued customer notification. Never actually sent — see the entity documentation.';
+/
+
+CREATE OR MODIFY ASSOCIATION Banking.Notification_Customer
+  FROM Banking.Notification TO Banking.Customer
+  TYPE Reference
+  DELETE_BEHAVIOR CASCADE
+  COMMENT 'Customer the notification is for.';
+/
+
+/**
+ * Form state for the profile page. Legacy: name.jsp and mobile.jsp,
+ * which posted a single field each to the Controller.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.ProfileForm (
+  FullName: String(200),
+  Address: String(200),
+  MobileNumber: String(15)
+)
+COMMENT 'Form state for the profile page. Not stored.';
+/
+
+/**
+ * Form state for changing the password. Legacy: pass.jsp, whose servlet
+ * handler was called emailu() — a copy-paste artefact.
+ *
+ * Plain String, not HashedString: this mirrors
+ * Administration.AccountPasswordData, which is how the platform's own
+ * change-password page carries a password before commit. Mendix hashes
+ * it when it is assigned to the user entity's Password member.
+ */
+CREATE OR MODIFY NON-PERSISTENT ENTITY Banking.PasswordForm (
+  NewPassword: String(200),
+  ConfirmPassword: String(200)
+)
+COMMENT 'Form state for changing the password. Not stored.';
+/

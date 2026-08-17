@@ -46,9 +46,15 @@ async function login(page, user) {
   await page.waitForSelector('text=/Welcome,/', { timeout: 30000 });
 }
 
-/** End the Mendix session — the trial licence caps concurrent sessions. */
 async function logout(page) {
-  await page.goto(`${BASE}/logout`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  // mx.logout(), not GET /logout. There is no /logout route — the runtime
+  // answers "404 - file not found for file: logout" and the session stays
+  // alive, which is how several suites quietly exhausted the trial
+  // licence's concurrent-session cap and started failing at the login form.
+  await page.evaluate(() => {
+    if (window.mx && typeof window.mx.logout === 'function') window.mx.logout();
+  }).catch(() => {});
+  await page.waitForTimeout(800);
 }
 
 /**

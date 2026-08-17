@@ -68,8 +68,8 @@ browser, not at a layer.
 | 3 | Beneficiaries — CRUD with validation | **Done** |
 | 4 | Transfers — atomic, server-side limit and balance checks | **Done** |
 | 5 | Bill payments — Biller reference data | **Done** |
-| 6 | Profile and credentials — change name/mobile/password, SMS notification seam | Next |
-| 7 | Open an additional account | |
+| 6 | Profile and credentials, plus the dashboard summary | **Done** |
+| 7 | Open an additional account | Next |
 | 8 | Public content, loans brochure, admin back-office | |
 
 Parked by decision, present in the source document but never implemented in it:
@@ -84,6 +84,7 @@ before any real deployment:
 |---|---|---|
 | **Optimistic locking** | App Settings → Runtime | Money movement reads a balance, checks it, then writes it. Without this, two simultaneous transfers or bill payments from one account can both pass the check and overdraw it. With it, the second commit fails instead. Note it *detects* rather than retries — a retry loop around the conflict is still worth adding. |
 | **Strict mode** (SEC005) | Project Security | Strengthens XPath constraint enforcement; relevant to CVE-2023-23835. |
+| **The `AccountSummary` view's association** | Domain model | `Banking.AccountSummary` is a valid OQL view that mxcli can create but cannot reference — no `GRANT`, no microflow return type. Adding the association (select `c.ID`) and an access rule in Studio Pro turns the dashboard from N+1 microflow queries into one grouped query. |
 
 Demo users are also still enabled at Production security level (SEC003) and must
 be turned off. See `FINDINGS.md` for detail on all three.
@@ -121,6 +122,7 @@ node tests/verify-s2-statements.mjs
 node tests/verify-s3-beneficiaries.mjs
 node tests/verify-s4-transfers.mjs
 node tests/verify-s5-billpayments.mjs
+node tests/verify-s6-profile.mjs
 ```
 
 `mxcli check` passing does **not** mean `mx check` passes. Run both.

@@ -381,16 +381,24 @@ server-side until it times out. Each test run therefore burns session slots
 until the cap is hit, and the symptom (failed login) points nowhere near the
 cause.
 
-Both test files now navigate to `/logout` before closing each page. If logins
-start failing for no reason, check the runtime log for this message before
-suspecting passwords, and restart the app to clear the accumulated sessions.
+**CORRECTED in Slice 6 — the fix below never worked.** The tests navigated to
+`/logout`, and there is no such route: the runtime answers
+`404 - file not found for file: logout` and the session stays alive. So every
+suite kept leaking sessions for four slices while appearing to clean up after
+itself, and the cap kept being hit. The working call is `mx.logout()` in the
+page:
 
-**Slice 3 update:** `/logout` helps but is not enough. The beneficiary suite
-opens six sessions across three users, and running it immediately followed by
-the Slice 1 and 2 suites hit the cap again. Sessions are released lazily, so the
-practical rule is **restart the app between test suites**, not merely sign out
-within them. Budget for this when adding suites — it is a licence limit, not
-something to engineer around.
+```js
+await page.evaluate(() => window.mx?.logout?.());
+```
+
+If logins start failing for no reason, check the runtime log for the
+session-cap message before suspecting passwords, and restart the app.
+
+**Slice 3 update:** restarting the app between suites was needed anyway.
+**Slice 6 update:** the real reason it was needed is the `/logout` 404 above —
+nothing was ever signing out. With `mx.logout()` in place, restarting between
+suites should be belt-and-braces rather than mandatory.
 
 ### `CREATE MICROFLOW` is not re-runnable; `exec` applies scripts that fail `check`
 
@@ -681,6 +689,109 @@ sort of thing that would otherwise get "fixed" by weakening an assertion:
   case now re-opens the page for a clean form. The assertion also prints which
   message it actually found, so a future failure says what happened instead of
   just "false".
+
+---
+
+## 2026-08-17 — Slice 6 (profile, credentials, dashboard summary)
+
+### OQL view entities are effectively write-only in mxcli
+
+The headline finding, and it kills the original plan for the dashboard.
+
+mxcli can CREATE a view entity, and Mendix is happy with the result — 0 errors.
+After that, MDL cannot reference it at all:
+
+| Attempt | Result |
+|---|---|
+| `GRANT ... ON Banking.AccountSummary (READ *)` | `entity not found` |
+| `RETURNS LIST OF Banking.AccountSummary` | `entity not found for return type` |
+| `SHOW ENTITIES IN Banking` | does not list it |
+
+Since a client cannot render an entity it has no read access to (Slice 2
+established that it renders blank rows instead), and no grant is possible, a
+view entity cannot feed a page written with mxcli. The dashboard is fed by
+`DS_MyDashboard` building non-persistent `Banking.DashboardCard` objects
+instead, and the view is kept as staged work.
+
+### Mendix view entities CAN have associations; MDL cannot declare one
+
+Worth separating from the above, because the first conclusion here was wrong.
+An explicit `CREATE ASSOCIATION` to a view is rejected outright:
+
+```
+CE6771 "It is not possible to create associations to/from View Entities."
+```
+
+which reads like "views cannot have associations". They can — you select the
+associated object's `.ID` and the column becomes the association. Mendix says so
+itself: declaring one and selecting `c.ID` produced
+
+```
+CE1613 "The selected association 'Banking.AccountSummary_Customer' no longer
+        exists." at Entity ... and at OQL query ...
+```
+
+— the checker looking for an association that MDL failed to create. What MDL
+actually wrote was an *enumeration* attribute (`CE1613 "The selected
+enumeration 'Banking.Customer' no longer exists"`), and `Reference(...)`,
+`Association(...)` and a trailing `ASSOCIATION` keyword are all parse errors.
+
+So the capability exists in Mendix and is unreachable from MDL. With it, the
+view could carry the ordinary `[... = '[%CurrentUser%]']` constraint and the
+dashboard would be one grouped query instead of N+1.
+
+### Three quieter view-entity traps
+
+- **`--` comments are not accepted inside the OQL body.** The parse fails,
+  `exec` therefore does not run, and if you are grepping output for a success
+  line you see nothing and can read it as success. That is exactly what happened
+  here: a "0 errors" build was reported for a view that had been dropped and
+  never recreated.
+- **`CREATE OR MODIFY` does not prune members the OQL no longer produces.**
+  After a bad edit, CE6770 "View Entity is out of sync with the OQL Query"
+  persists until the view is DROPped and recreated.
+- **Pass-through columns inherit the source length.** `c.Name` from
+  `System.User` is `String(unlimited)`, so declaring `String(200)` fails CE6770 —
+  and `cast()`, which the OQL skill documents, is not in the MDL grammar. There
+  is no way to narrow it.
+
+### Mendix commits an input to the model on BLUR
+
+This one cost the most time and produced a false bug report. Filling a field and
+immediately clicking the submit button races the model update, so the microflow
+runs against the *previous* value. The symptom is a stale validation message, or
+none at all, and it looks exactly like a broken feature.
+
+Two Slice 6 assertions failed this way and I nearly recorded "changing the
+password does not work" as a defect. It worked — logging in with the new
+password proved it while the message assertion said otherwise. Press `Tab`
+after filling, before clicking.
+
+The lesson generalises past this project: when a UI test says a feature is
+broken, confirm through a second channel (the database, a login) before
+believing it.
+
+### Changing your own password does not end your session
+
+Checked because it would have explained the above. It does not: the page stays
+on `/p/profile` and the success message shows. Worth knowing, and worth
+considering whether it *should* — most banks re-authenticate.
+
+### HARDENING: the password change does not verify the current password
+
+Anyone with a live session can change the password. Mendix's own
+`Administration.ChangePassword` collects an `OldPassword` and does not verify it
+either, and the legacy app never asked for one — but a banking app should.
+Verifying it needs a Java action: Mendix exposes no expression that checks a
+password against its stored hash.
+
+### `substring()` and `length()` cover the legacy mobile rules; a regex would not
+
+The legacy JavaScript checked ten digits, a 7/8/9 prefix, and `isNaN`. The first
+two are expressible directly. The digits-only check is not: Mendix expressions
+have no regex function, and doing it properly means a Regular Expression
+document plus an entity validation rule, which lint CONV015 steers away from.
+Length and prefix are enforced; full format validation is a hardening item.
 
 ### Open security items, deliberately deferred
 
